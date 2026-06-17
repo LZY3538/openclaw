@@ -51,7 +51,7 @@ actor VoiceWakeRuntime {
 
     /// Tunables
     /// Silence threshold once we've captured user speech (post-trigger).
-    /// Overridden by talk.wakeCaptureSilenceMs config when set; defaults to 2000 ms.
+    /// Configured via talk.silenceTimeoutMs; defaults to 2000 ms when unset.
     private var silenceWindow: TimeInterval = 2.0
     /// Silence threshold when we only heard the trigger but no post-trigger speech yet.
     private let triggerOnlySilenceWindow: TimeInterval = 5.0
@@ -153,6 +153,13 @@ actor VoiceWakeRuntime {
             let generation = self.recognitionGeneration
 
             self.configureSession(localeID: config.localeID)
+
+            // Pull the capture silence window from gateway talk.silenceTimeoutMs
+            // so the HUD respects user-configured pause tolerance.
+            let captureSilenceMs = await self.resolveCaptureSilenceMs()
+            if captureSilenceMs > 0 {
+                self.silenceWindow = TimeInterval(captureSilenceMs) / 1000
+            }
 
             guard let recognizer, recognizer.isAvailable else {
                 self.logger.error("voicewake runtime: speech recognizer unavailable")
@@ -278,6 +285,22 @@ actor VoiceWakeRuntime {
         let locale = localeID.flatMap { Locale(identifier: $0) } ?? Locale(identifier: Locale.current.identifier)
         self.recognizer = SFSpeechRecognizer(locale: locale)
         self.recognizer?.defaultTaskHint = .dictation
+    }
+
+    /// Resolve the HUD capture silence window from gateway talk.silenceTimeoutMs.
+    /// Defaults to 2000 ms when the config is unavailable or unset.
+    private func resolveCaptureSilenceMs() async -> Int {
+        do {
+            let snap: ConfigSnapshot = try await GatewayConnection.shared.requestDecoded(
+                method: .talkConfig,
+                params: [:],
+                timeoutMs: 5000)
+            let talk = snap.config?["talk"]?.dictionaryValue
+            return TalkConfigParsing.resolvedSilenceTimeoutMs(talk, fallback: 2000)
+        } catch {
+            self.logger.debug("voicewake runtime: talk config unavailable, using default silence window")
+            return 2000
+        }
     }
 
     private func handleRecognition(_ update: RecognitionUpdate, config: RuntimeConfig) async {
@@ -775,12 +798,6 @@ actor VoiceWakeRuntime {
     func pauseForPushToTalk() {
         self.listeningState = .pushToTalk
         self.stop(dismissOverlay: false)
-    }
-
-    /// Update the post-trigger capture silence window from gateway talk config.
-    func setCaptureSilenceWindow(_ window: TimeInterval) {
-        guard window > 0 else { return }
-        self.silenceWindow = window
     }
 
     private func updateHeardBeyondTrigger(withTrimmed trimmed: String) {

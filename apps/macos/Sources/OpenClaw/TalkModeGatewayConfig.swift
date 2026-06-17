@@ -11,7 +11,6 @@ struct TalkModeGatewayConfigState {
     let outputFormat: String?
     let interruptOnSpeech: Bool
     let silenceTimeoutMs: Int
-    let wakeCaptureSilenceMs: Int
     let speechLocaleID: String?
     let apiKey: String?
     let seamColorHex: String?
@@ -34,9 +33,6 @@ enum TalkModeGatewayConfigParser {
         let silenceTimeoutMs = TalkConfigParsing.resolvedSilenceTimeoutMs(
             talk,
             fallback: defaultSilenceTimeoutMs)
-        let wakeCaptureSilenceMs = TalkConfigParsing.resolvedWakeCaptureSilenceMs(
-            talk,
-            fallback: TalkDefaults.wakeCaptureSilenceMs)
         let ui = snapshot.config?["ui"]?.dictionaryValue
         let rawSeam = ui?["seamColor"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let voice = activeConfig?["voiceId"]?.stringValue
@@ -84,7 +80,6 @@ enum TalkModeGatewayConfigParser {
             outputFormat: outputFormat,
             interruptOnSpeech: interrupt ?? true,
             silenceTimeoutMs: silenceTimeoutMs,
-            wakeCaptureSilenceMs: wakeCaptureSilenceMs,
             speechLocaleID: speechLocaleID,
             apiKey: resolvedApiKey,
             seamColorHex: rawSeam.isEmpty ? nil : rawSeam)
@@ -112,7 +107,6 @@ enum TalkModeGatewayConfigParser {
             outputFormat: nil,
             interruptOnSpeech: true,
             silenceTimeoutMs: defaultSilenceTimeoutMs,
-            wakeCaptureSilenceMs: TalkDefaults.wakeCaptureSilenceMs,
             speechLocaleID: nil,
             apiKey: resolvedApiKey,
             seamColorHex: nil)
