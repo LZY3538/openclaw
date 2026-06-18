@@ -4919,8 +4919,6 @@ export async function runEmbeddedAttempt(
         // Only trust snapshot if compaction wasn't running before or after capture
         const preCompactionSnapshot = wasCompactingBefore || wasCompactingAfter ? null : snapshot;
         const preCompactionSessionId = activeSession.sessionId;
-        const COMPACTION_RETRY_AGGREGATE_TIMEOUT_MS = 60_000;
-
         try {
           // Flush buffered block replies before waiting for compaction so the
           // user receives the assistant response immediately.  Without this,
@@ -4937,14 +4935,14 @@ export async function runEmbeddedAttempt(
             : await waitForCompactionRetryWithAggregateTimeout({
                 waitForCompactionRetry,
                 abortable,
-                aggregateTimeoutMs: COMPACTION_RETRY_AGGREGATE_TIMEOUT_MS,
+                aggregateTimeoutMs: compactionTimeoutMs,
                 isCompactionStillInFlight: isCompactionInFlight,
               });
           if (compactionRetryWait.timedOut) {
             timedOutDuringCompaction = true;
             if (!isProbeSession) {
               log.warn(
-                `compaction retry aggregate timeout (${COMPACTION_RETRY_AGGREGATE_TIMEOUT_MS}ms): ` +
+                `compaction retry aggregate timeout (${compactionTimeoutMs}ms): ` +
                   `proceeding with pre-compaction state runId=${params.runId} sessionId=${params.sessionId}`,
               );
             }
