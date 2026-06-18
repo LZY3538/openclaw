@@ -1128,15 +1128,24 @@ function resolveOllamaModelHeaders(model: {
   return model.headers as Record<string, string>;
 }
 
+const OLLAMA_REMOTE_REQUEST_TIMEOUT_FALLBACK_MS = 5 * 60 * 1000; // 5 min for slow remote hosts
+
 function resolveOllamaRequestTimeoutMs(
   model: object,
   options: { requestTimeoutMs?: unknown; timeoutMs?: unknown } | undefined,
-): number | undefined {
+): number {
   const raw =
     options?.requestTimeoutMs ??
     options?.timeoutMs ??
     (model as { requestTimeoutMs?: unknown }).requestTimeoutMs;
-  return typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : undefined;
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+    return Math.floor(raw);
+  }
+  // When no explicit timeout is configured (e.g. remote Ollama with
+  // provider-level timeoutSeconds not propagated to the stream model),
+  // use a generous fallback so slow CPU-only remote hosts can deliver
+  // their first token without the fetch guard timing out.
+  return OLLAMA_REMOTE_REQUEST_TIMEOUT_FALLBACK_MS;
 }
 
 function createRawOllamaStreamFn(
