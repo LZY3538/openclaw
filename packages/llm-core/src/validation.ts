@@ -247,6 +247,28 @@ function coerceWithJsonSchema(value: unknown, schema: JsonSchemaObject): unknown
     }
   }
 
+  // LLMs may serialize array/object parameters as JSON strings
+  // (e.g. "[\"a\",\"b\"]" instead of ["a","b"]). Try to parse the
+  // string before giving up — this makes MCP tools work across
+  // providers that differ in how they emit complex parameter types.
+  if (typeof nextValue === "string" && schemaTypes.length > 0) {
+    const wantsContainer =
+      schemaTypes.includes("array") || schemaTypes.includes("object");
+    if (wantsContainer) {
+      try {
+        const parsed = JSON.parse(nextValue);
+        if (
+          (schemaTypes.includes("array") && Array.isArray(parsed)) ||
+          (schemaTypes.includes("object") && isRecord(parsed) && !Array.isArray(parsed))
+        ) {
+          nextValue = parsed;
+        }
+      } catch {
+        // Not valid JSON — keep the original string
+      }
+    }
+  }
+
   if (schemaTypes.includes("object") && isRecord(nextValue) && !Array.isArray(nextValue)) {
     applySchemaObjectCoercion(nextValue, schema);
   }
