@@ -424,7 +424,7 @@ describe("runCapability auto audio entries", () => {
 
     expect(requireCapabilityOutput(result, 0).text).toBe("ok");
     expect(seenLanguage).toBe("ru");
-    expect(seenPrompt).toBe("");
+    expect(seenPrompt).toBeUndefined();
   });
 
   it("keeps the default audio prompt when no language hint is configured", async () => {

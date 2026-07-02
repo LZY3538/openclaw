@@ -51,13 +51,18 @@ export function resolvePrompt(
   prompt?: string,
   maxChars?: number,
   language?: string,
-): string {
+): string | undefined {
   const explicitPrompt = prompt?.trim();
   const base =
     explicitPrompt ||
-    (capability === "audio" && isNonEnglishLanguage(language) ? "" : DEFAULT_PROMPT[capability]);
+    (capability === "audio" && isNonEnglishLanguage(language)
+      ? undefined
+      : DEFAULT_PROMPT[capability]);
   if (!maxChars || capability === "audio") {
     return base;
+  }
+  if (!base) {
+    return undefined;
   }
   return `${base} Respond in at most ${maxChars} characters.`;
 }

@@ -409,7 +409,7 @@ function resolveEntryRunOptions(params: {
   entry: MediaUnderstandingModelConfig;
   cfg: OpenClawConfig;
   config?: MediaUnderstandingConfig;
-}): { maxBytes: number; maxChars?: number; timeoutMs: number; prompt: string } {
+}): { maxBytes: number; maxChars?: number; timeoutMs: number; prompt?: string } {
   const { capability, entry, cfg } = params;
   const requestOverrides = resolveMediaRequestOverrides(params.config);
   const maxBytes = resolveMaxBytes({ capability, entry, cfg, config: params.config });

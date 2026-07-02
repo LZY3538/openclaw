@@ -115,6 +115,27 @@ describe("transcribeOpenAiCompatibleAudio", () => {
     expect(headers.get("authorization")).toBe("Bearer typed-key");
   });
 
+  it("omits optional prompt fields from transcription multipart requests", async () => {
+    const { fetchFn, getRequest } = createRequestCaptureJsonFetch({ text: "ok" });
+
+    await transcribeOpenAiCompatibleAudio({
+      buffer: Buffer.from("audio"),
+      fileName: "note.mp3",
+      apiKey: "test-key",
+      language: "ru",
+      timeoutMs: 1000,
+      fetchFn,
+      provider: "openai",
+      defaultBaseUrl: "https://api.openai.com/v1",
+      defaultModel: "gpt-4o-transcribe",
+    });
+
+    const form = getRequest().init?.body;
+    expect(form).toBeInstanceOf(FormData);
+    expect((form as FormData).get("language")).toBe("ru");
+    expect((form as FormData).has("prompt")).toBe(false);
+  });
+
   it("wraps malformed transcription JSON with a stable provider error", async () => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response("{ nope"));
 

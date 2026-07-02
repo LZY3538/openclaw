@@ -29,8 +29,8 @@ describe("media timeout resolution", () => {
 
 describe("resolvePrompt", () => {
   it("suppresses the implicit English audio prompt for explicit non-English languages", () => {
-    expect(resolvePrompt("audio", undefined, undefined, "ru")).toBe("");
-    expect(resolvePrompt("audio", undefined, undefined, "zh-CN")).toBe("");
+    expect(resolvePrompt("audio", undefined, undefined, "ru")).toBeUndefined();
+    expect(resolvePrompt("audio", undefined, undefined, "zh-CN")).toBeUndefined();
   });
 
   it("keeps explicit audio prompts and English defaults", () => {
