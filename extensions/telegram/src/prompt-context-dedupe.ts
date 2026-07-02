@@ -53,12 +53,9 @@ function isOpenClawSessionPromptMessage(message: TelegramPromptContextMessageFor
   return (
     typeof message.message_id === "string" &&
     message.message_id.startsWith("session:") &&
-    isOpenClawPromptMessage(message)
+    typeof message.sender === "string" &&
+    message.sender.startsWith("OpenClaw")
   );
-}
-
-function isOpenClawPromptMessage(message: TelegramPromptContextMessageForDedupe): boolean {
-  return typeof message.sender === "string" && message.sender.startsWith("OpenClaw");
 }
 
 function isWithinDirectiveTagCacheTimestampDrift(
@@ -81,20 +78,20 @@ export function resolvePromptContextTextDedupeKey(
 function shouldDropSessionPromptMessage(
   sessionMessage: TelegramPromptContextMessageForDedupe,
   cacheTextKeys: ReadonlySet<string>,
-  openClawCacheTextKeys: ReadonlySet<string>,
-  openClawCacheTexts: readonly TelegramPromptContextNormalizedText[],
+  assistantCacheTextKeys: ReadonlySet<string>,
+  assistantCacheTexts: readonly TelegramPromptContextNormalizedText[],
 ): boolean {
   const exactKey = resolvePromptContextTextDedupeKey(sessionMessage);
   const sessionText = resolvePromptContextNormalizedText(sessionMessage);
   if (!sessionText?.directiveTagsStripped || !isOpenClawSessionPromptMessage(sessionMessage)) {
     return exactKey !== undefined && cacheTextKeys.has(exactKey);
   }
-  if (exactKey !== undefined && openClawCacheTextKeys.has(exactKey)) {
+  if (exactKey !== undefined && assistantCacheTextKeys.has(exactKey)) {
     return true;
   }
   // Telegram cache rows may still use send-completion time on released builds;
   // only directive-tagged synthetic assistant rows get near-time fallback dedupe.
-  return openClawCacheTexts.some(
+  return assistantCacheTexts.some(
     (cacheText) =>
       cacheText.text === sessionText.text &&
       isWithinDirectiveTagCacheTimestampDrift(sessionText, cacheText),
@@ -107,21 +104,22 @@ export function mergeTelegramPromptContextMessages<
 >(params: {
   sessionPromptMessages: readonly TSessionMessage[];
   cachePromptMessages: readonly TCacheMessage[];
+  isAssistantCacheMessage: (message: TCacheMessage) => boolean;
 }): MergeTelegramPromptContextMessagesResult<TSessionMessage, TCacheMessage> {
   const cacheTextKeys = new Set(
     params.cachePromptMessages
       .map((message) => resolvePromptContextTextDedupeKey(message))
       .filter((key) => key !== undefined),
   );
-  const openClawCachePromptMessages = params.cachePromptMessages.filter((message) =>
-    isOpenClawPromptMessage(message),
+  const assistantCachePromptMessages = params.cachePromptMessages.filter(
+    params.isAssistantCacheMessage,
   );
-  const openClawCacheTextKeys = new Set(
-    openClawCachePromptMessages
+  const assistantCacheTextKeys = new Set(
+    assistantCachePromptMessages
       .map((message) => resolvePromptContextTextDedupeKey(message))
       .filter((key) => key !== undefined),
   );
-  const openClawCacheTexts = openClawCachePromptMessages
+  const assistantCacheTexts = assistantCachePromptMessages
     .map((message) => resolvePromptContextNormalizedText(message))
     .filter((text) => text !== undefined);
   const sessionOnlyPromptMessages = params.sessionPromptMessages.filter(
@@ -129,8 +127,8 @@ export function mergeTelegramPromptContextMessages<
       !shouldDropSessionPromptMessage(
         message,
         cacheTextKeys,
-        openClawCacheTextKeys,
-        openClawCacheTexts,
+        assistantCacheTextKeys,
+        assistantCacheTexts,
       ),
   );
   return {

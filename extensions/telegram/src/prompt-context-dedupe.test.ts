@@ -1,8 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
+  type TelegramPromptContextMessageForDedupe,
   mergeTelegramPromptContextMessages,
   resolvePromptContextTextDedupeKey,
 } from "./prompt-context-dedupe.js";
+
+function mergeWithAssistantCacheIds(params: {
+  sessionPromptMessages: readonly TelegramPromptContextMessageForDedupe[];
+  cachePromptMessages: readonly TelegramPromptContextMessageForDedupe[];
+  assistantCacheMessageIds: readonly string[];
+}) {
+  const assistantCacheMessageIds = new Set(params.assistantCacheMessageIds);
+  return mergeTelegramPromptContextMessages({
+    sessionPromptMessages: params.sessionPromptMessages,
+    cachePromptMessages: params.cachePromptMessages,
+    isAssistantCacheMessage: (message) =>
+      typeof message.message_id === "string" && assistantCacheMessageIds.has(message.message_id),
+  });
+}
 
 describe("resolvePromptContextTextDedupeKey", () => {
   it("matches assistant transcript text to Telegram cache text after stripping directive tags", () => {
@@ -34,7 +49,7 @@ describe("resolvePromptContextTextDedupeKey", () => {
   });
 
   it("filters directive-tagged session rows when a cache row has the same visible text", () => {
-    const result = mergeTelegramPromptContextMessages({
+    const result = mergeWithAssistantCacheIds({
       sessionPromptMessages: [
         {
           message_id: "session:assistant-with-reply-directive",
@@ -51,6 +66,7 @@ describe("resolvePromptContextTextDedupeKey", () => {
           body: "Yep - I'm here now.",
         },
       ],
+      assistantCacheMessageIds: ["736"],
     });
 
     expect(result.sessionOnlyPromptMessages).toEqual([]);
@@ -65,7 +81,7 @@ describe("resolvePromptContextTextDedupeKey", () => {
   });
 
   it("filters inline directive-tagged session rows using delivery-normalized text", () => {
-    const result = mergeTelegramPromptContextMessages({
+    const result = mergeWithAssistantCacheIds({
       sessionPromptMessages: [
         {
           message_id: "session:inline-reply-directive",
@@ -82,6 +98,7 @@ describe("resolvePromptContextTextDedupeKey", () => {
           body: "hello world",
         },
       ],
+      assistantCacheMessageIds: ["736"],
     });
 
     expect(result.sessionOnlyPromptMessages).toEqual([]);
@@ -96,7 +113,7 @@ describe("resolvePromptContextTextDedupeKey", () => {
   });
 
   it("filters directive-tagged session rows when the delivered cache timestamp drifts", () => {
-    const result = mergeTelegramPromptContextMessages({
+    const result = mergeWithAssistantCacheIds({
       sessionPromptMessages: [
         {
           message_id: "session:bc268f12",
@@ -113,6 +130,32 @@ describe("resolvePromptContextTextDedupeKey", () => {
           body: "Duplicate context test reply - issue 99117",
         },
       ],
+      assistantCacheMessageIds: ["808"],
+    });
+
+    expect(result.sessionOnlyPromptMessages).toEqual([]);
+    expect(result.promptMessages.map((message) => message.message_id)).toEqual(["808"]);
+  });
+
+  it("filters directive-tagged session rows for custom-named assistant cache rows", () => {
+    const result = mergeWithAssistantCacheIds({
+      sessionPromptMessages: [
+        {
+          message_id: "session:custom-bot-name",
+          sender: "OpenClaw",
+          timestamp_ms: 1_783_019_792_000,
+          body: "[[reply_to_current]]Custom bot display names still dedupe.",
+        },
+      ],
+      cachePromptMessages: [
+        {
+          message_id: "808",
+          sender: "Molty Support Bot",
+          timestamp_ms: 1_783_019_798_000,
+          body: "Custom bot display names still dedupe.",
+        },
+      ],
+      assistantCacheMessageIds: ["808"],
     });
 
     expect(result.sessionOnlyPromptMessages).toEqual([]);
@@ -120,7 +163,7 @@ describe("resolvePromptContextTextDedupeKey", () => {
   });
 
   it("keeps both plain session and cache rows when visible text matches but timestamps differ", () => {
-    const result = mergeTelegramPromptContextMessages({
+    const result = mergeWithAssistantCacheIds({
       sessionPromptMessages: [
         {
           message_id: "session:assistant-with-reply-directive",
@@ -137,6 +180,7 @@ describe("resolvePromptContextTextDedupeKey", () => {
           body: "Yep - I'm here now.",
         },
       ],
+      assistantCacheMessageIds: ["736"],
     });
 
     expect(result.sessionOnlyPromptMessages).toHaveLength(1);
@@ -147,7 +191,7 @@ describe("resolvePromptContextTextDedupeKey", () => {
   });
 
   it("keeps directive-tagged session rows when only a user cache row has matching visible text", () => {
-    const result = mergeTelegramPromptContextMessages({
+    const result = mergeWithAssistantCacheIds({
       sessionPromptMessages: [
         {
           message_id: "session:assistant-with-reply-directive",
@@ -170,6 +214,7 @@ describe("resolvePromptContextTextDedupeKey", () => {
           body: "same visible text",
         },
       ],
+      assistantCacheMessageIds: [],
     });
 
     expect(result.sessionOnlyPromptMessages).toHaveLength(1);

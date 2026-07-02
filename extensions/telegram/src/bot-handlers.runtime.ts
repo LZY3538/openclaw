@@ -1304,16 +1304,27 @@ export const registerTelegramHandlers = ({
         conversationContextById.set(node.messageId, { node });
       }
     }
-    const cachePromptMessages = Array.from(conversationContextById.values()).map((entry) =>
-      toPromptContextMessage(
+    const cachePromptEntries = Array.from(conversationContextById.values()).map((entry) => ({
+      node: entry.node,
+      message: toPromptContextMessage(
         entry.node,
         { replyTarget: entry.isReplyTarget },
         entry.node.messageId ? mediaByMessageId?.get(entry.node.messageId) : undefined,
       ),
+    }));
+    const botId = ctx.me?.id;
+    const assistantCacheMessageIds = new Set(
+      cachePromptEntries
+        .filter((entry) => botId != null && entry.node.sourceMessage.from?.id === botId)
+        .map((entry) => entry.message.message_id)
+        .filter((messageId) => typeof messageId === "string"),
     );
+    const cachePromptMessages = cachePromptEntries.map((entry) => entry.message);
     const { sessionOnlyPromptMessages, promptMessages } = mergeTelegramPromptContextMessages({
       sessionPromptMessages,
       cachePromptMessages,
+      isAssistantCacheMessage: (message) =>
+        typeof message.message_id === "string" && assistantCacheMessageIds.has(message.message_id),
     });
     return promptMessages.length > 0
       ? [
