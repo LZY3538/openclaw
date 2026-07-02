@@ -3,7 +3,14 @@ import { stripInlineDirectiveTagsForDelivery } from "openclaw/plugin-sdk/text-ch
 export type TelegramPromptContextMessageForDedupe = {
   body?: unknown;
   message_id?: unknown;
+  sender?: unknown;
   timestamp_ms?: unknown;
+};
+
+type TelegramPromptContextNormalizedText = {
+  directiveTagsStripped: boolean;
+  text: string;
+  timestampMs: number;
 };
 
 export type MergeTelegramPromptContextMessagesResult<
@@ -14,23 +21,80 @@ export type MergeTelegramPromptContextMessagesResult<
   promptMessages: Array<TSessionMessage | TCacheMessage>;
 };
 
+const DIRECTIVE_TAG_CACHE_TIMESTAMP_DRIFT_TOLERANCE_MS = 30_000;
+
 function promptContextTimestampForSort(message: TelegramPromptContextMessageForDedupe): number {
   return typeof message.timestamp_ms === "number" && Number.isFinite(message.timestamp_ms)
     ? message.timestamp_ms
     : 0;
 }
 
-export function resolvePromptContextTextDedupeKey(
+function resolvePromptContextNormalizedText(
   message: TelegramPromptContextMessageForDedupe,
-): string | undefined {
+): TelegramPromptContextNormalizedText | undefined {
   if (typeof message.body !== "string" || !message.body.trim()) {
     return undefined;
   }
   if (typeof message.timestamp_ms !== "number" || !Number.isFinite(message.timestamp_ms)) {
     return undefined;
   }
-  const visibleBody = stripInlineDirectiveTagsForDelivery(message.body).text.trim();
-  return visibleBody ? `${message.timestamp_ms}:${visibleBody}` : undefined;
+  const deliveredBody = stripInlineDirectiveTagsForDelivery(message.body);
+  const text = deliveredBody.text.trim();
+  return text
+    ? {
+        directiveTagsStripped: deliveredBody.changed,
+        text,
+        timestampMs: message.timestamp_ms,
+      }
+    : undefined;
+}
+
+function isOpenClawSessionPromptMessage(message: TelegramPromptContextMessageForDedupe): boolean {
+  return (
+    typeof message.message_id === "string" &&
+    message.message_id.startsWith("session:") &&
+    typeof message.sender === "string" &&
+    message.sender.startsWith("OpenClaw")
+  );
+}
+
+function isWithinDirectiveTagCacheTimestampDrift(
+  sessionText: TelegramPromptContextNormalizedText,
+  cacheText: TelegramPromptContextNormalizedText,
+): boolean {
+  return (
+    Math.abs(sessionText.timestampMs - cacheText.timestampMs) <=
+    DIRECTIVE_TAG_CACHE_TIMESTAMP_DRIFT_TOLERANCE_MS
+  );
+}
+
+export function resolvePromptContextTextDedupeKey(
+  message: TelegramPromptContextMessageForDedupe,
+): string | undefined {
+  const normalized = resolvePromptContextNormalizedText(message);
+  return normalized ? `${normalized.timestampMs}:${normalized.text}` : undefined;
+}
+
+function shouldDropSessionPromptMessage(
+  sessionMessage: TelegramPromptContextMessageForDedupe,
+  cacheTextKeys: ReadonlySet<string>,
+  cacheTexts: readonly TelegramPromptContextNormalizedText[],
+): boolean {
+  const exactKey = resolvePromptContextTextDedupeKey(sessionMessage);
+  if (exactKey !== undefined && cacheTextKeys.has(exactKey)) {
+    return true;
+  }
+  const sessionText = resolvePromptContextNormalizedText(sessionMessage);
+  if (!sessionText?.directiveTagsStripped || !isOpenClawSessionPromptMessage(sessionMessage)) {
+    return false;
+  }
+  // Telegram cache rows may still use send-completion time on released builds;
+  // only directive-tagged synthetic assistant rows get near-time fallback dedupe.
+  return cacheTexts.some(
+    (cacheText) =>
+      cacheText.text === sessionText.text &&
+      isWithinDirectiveTagCacheTimestampDrift(sessionText, cacheText),
+  );
 }
 
 export function mergeTelegramPromptContextMessages<
@@ -45,10 +109,12 @@ export function mergeTelegramPromptContextMessages<
       .map((message) => resolvePromptContextTextDedupeKey(message))
       .filter((key) => key !== undefined),
   );
-  const sessionOnlyPromptMessages = params.sessionPromptMessages.filter((message) => {
-    const key = resolvePromptContextTextDedupeKey(message);
-    return key === undefined || !cacheTextKeys.has(key);
-  });
+  const cacheTexts = params.cachePromptMessages
+    .map((message) => resolvePromptContextNormalizedText(message))
+    .filter((text) => text !== undefined);
+  const sessionOnlyPromptMessages = params.sessionPromptMessages.filter(
+    (message) => !shouldDropSessionPromptMessage(message, cacheTextKeys, cacheTexts),
+  );
   return {
     sessionOnlyPromptMessages,
     promptMessages: [...sessionOnlyPromptMessages, ...params.cachePromptMessages].toSorted(

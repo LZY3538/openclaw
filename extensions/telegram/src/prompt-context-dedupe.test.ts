@@ -38,6 +38,7 @@ describe("resolvePromptContextTextDedupeKey", () => {
       sessionPromptMessages: [
         {
           message_id: "session:assistant-with-reply-directive",
+          sender: "OpenClaw",
           timestamp_ms: 1_778_474_760_000,
           body: "[[reply_to_current]]Yep - I'm here now.",
         },
@@ -45,6 +46,7 @@ describe("resolvePromptContextTextDedupeKey", () => {
       cachePromptMessages: [
         {
           message_id: "736",
+          sender: "OpenClaw",
           timestamp_ms: 1_778_474_760_000,
           body: "Yep - I'm here now.",
         },
@@ -66,6 +68,7 @@ describe("resolvePromptContextTextDedupeKey", () => {
       sessionPromptMessages: [
         {
           message_id: "session:inline-reply-directive",
+          sender: "OpenClaw",
           timestamp_ms: 1_778_474_760_000,
           body: "hello [[reply_to_current]] world",
         },
@@ -73,6 +76,7 @@ describe("resolvePromptContextTextDedupeKey", () => {
       cachePromptMessages: [
         {
           message_id: "736",
+          sender: "OpenClaw",
           timestamp_ms: 1_778_474_760_000,
           body: "hello world",
         },
@@ -83,24 +87,51 @@ describe("resolvePromptContextTextDedupeKey", () => {
     expect(result.promptMessages).toEqual([
       {
         message_id: "736",
+        sender: "OpenClaw",
         timestamp_ms: 1_778_474_760_000,
         body: "hello world",
       },
     ]);
   });
 
-  it("keeps both session and cache rows when visible text matches but timestamps differ", () => {
+  it("filters directive-tagged session rows when the delivered cache timestamp drifts", () => {
+    const result = mergeTelegramPromptContextMessages({
+      sessionPromptMessages: [
+        {
+          message_id: "session:bc268f12",
+          sender: "OpenClaw",
+          timestamp_ms: 1_783_019_792_000,
+          body: "[[reply_to_current]]Duplicate context test reply - issue 99117",
+        },
+      ],
+      cachePromptMessages: [
+        {
+          message_id: "808",
+          sender: "OpenClaw",
+          timestamp_ms: 1_783_019_798_000,
+          body: "Duplicate context test reply - issue 99117",
+        },
+      ],
+    });
+
+    expect(result.sessionOnlyPromptMessages).toEqual([]);
+    expect(result.promptMessages.map((message) => message.message_id)).toEqual(["808"]);
+  });
+
+  it("keeps both plain session and cache rows when visible text matches but timestamps differ", () => {
     const result = mergeTelegramPromptContextMessages({
       sessionPromptMessages: [
         {
           message_id: "session:assistant-with-reply-directive",
+          sender: "OpenClaw",
           timestamp_ms: 1_778_474_760_000,
-          body: "[[reply_to_current]]Yep - I'm here now.",
+          body: "Yep - I'm here now.",
         },
       ],
       cachePromptMessages: [
         {
           message_id: "736",
+          sender: "OpenClaw",
           timestamp_ms: 1_778_474_761_000,
           body: "Yep - I'm here now.",
         },
