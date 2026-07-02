@@ -50,12 +50,29 @@ export function resolvePrompt(
   capability: MediaUnderstandingCapability,
   prompt?: string,
   maxChars?: number,
+  language?: string,
 ): string {
-  const base = prompt?.trim() || DEFAULT_PROMPT[capability];
+  const explicitPrompt = prompt?.trim();
+  const base =
+    explicitPrompt ||
+    (capability === "audio" && isNonEnglishLanguage(language) ? "" : DEFAULT_PROMPT[capability]);
   if (!maxChars || capability === "audio") {
     return base;
   }
   return `${base} Respond in at most ${maxChars} characters.`;
+}
+
+function isNonEnglishLanguage(language: string | undefined): boolean {
+  const normalized = language?.trim().toLowerCase().replaceAll("_", "-");
+  if (!normalized) {
+    return false;
+  }
+  return (
+    normalized !== "en" &&
+    normalized !== "eng" &&
+    normalized !== "english" &&
+    !normalized.startsWith("en-")
+  );
 }
 
 /** Resolves the effective max response characters for a model entry and capability. */

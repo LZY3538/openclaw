@@ -411,6 +411,7 @@ function resolveEntryRunOptions(params: {
   config?: MediaUnderstandingConfig;
 }): { maxBytes: number; maxChars?: number; timeoutMs: number; prompt: string } {
   const { capability, entry, cfg } = params;
+  const requestOverrides = resolveMediaRequestOverrides(params.config);
   const maxBytes = resolveMaxBytes({ capability, entry, cfg, config: params.config });
   const maxChars = resolveMaxChars({ capability, entry, cfg, config: params.config });
   const timeoutMs = resolveTimeoutMs(
@@ -421,8 +422,15 @@ function resolveEntryRunOptions(params: {
   );
   const prompt = resolvePrompt(
     capability,
-    entry.prompt ?? params.config?.prompt ?? cfg.tools?.media?.[capability]?.prompt,
+    requestOverrides.prompt ??
+      entry.prompt ??
+      params.config?.prompt ??
+      cfg.tools?.media?.[capability]?.prompt,
     maxChars,
+    requestOverrides.language ??
+      entry.language ??
+      params.config?.language ??
+      cfg.tools?.media?.[capability]?.language,
   );
   return { maxBytes, maxChars, timeoutMs, prompt };
 }

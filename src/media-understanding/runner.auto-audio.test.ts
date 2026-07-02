@@ -400,6 +400,56 @@ describe("runCapability auto audio entries", () => {
     expect(seenPrompt).toBe("Focus on names");
   });
 
+  it("omits the implicit English prompt for non-English transcription hints", async () => {
+    let seenLanguage: string | undefined;
+    let seenPrompt: string | undefined;
+    const result = await runAutoAudioCase({
+      transcribeAudio: async (req) => {
+        seenLanguage = req.language;
+        seenPrompt = req.prompt;
+        return { text: "ok", model: req.model ?? "unknown" };
+      },
+      cfgExtra: {
+        tools: {
+          media: {
+            audio: {
+              enabled: true,
+              language: "ru",
+              models: [{ provider: "openai", model: "whisper-1" }],
+            },
+          },
+        },
+      } as Partial<OpenClawConfig>,
+    });
+
+    expect(requireCapabilityOutput(result, 0).text).toBe("ok");
+    expect(seenLanguage).toBe("ru");
+    expect(seenPrompt).toBe("");
+  });
+
+  it("keeps the default audio prompt when no language hint is configured", async () => {
+    let seenPrompt: string | undefined;
+    const result = await runAutoAudioCase({
+      transcribeAudio: async (req) => {
+        seenPrompt = req.prompt;
+        return { text: "ok", model: req.model ?? "unknown" };
+      },
+      cfgExtra: {
+        tools: {
+          media: {
+            audio: {
+              enabled: true,
+              models: [{ provider: "openai", model: "whisper-1" }],
+            },
+          },
+        },
+      } as Partial<OpenClawConfig>,
+    });
+
+    expect(requireCapabilityOutput(result, 0).text).toBe("ok");
+    expect(seenPrompt).toBe("Transcribe the audio.");
+  });
+
   it("uses mistral when only mistral key is configured", async () => {
     const isolatedAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-audio-agent-"));
     let runResult: Awaited<ReturnType<typeof runCapability>> | undefined;

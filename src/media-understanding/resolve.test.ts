@@ -2,7 +2,12 @@
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../config/types.js";
-import { resolveMediaRuntimeTimeoutMs, resolveModelEntries, resolveTimeoutMs } from "./resolve.js";
+import {
+  resolveMediaRuntimeTimeoutMs,
+  resolveModelEntries,
+  resolvePrompt,
+  resolveTimeoutMs,
+} from "./resolve.js";
 import type { MediaUnderstandingCapability } from "./types.js";
 
 const providerRegistry = new Map<string, { capabilities: MediaUnderstandingCapability[] }>([
@@ -19,6 +24,27 @@ describe("media timeout resolution", () => {
   it("caps explicit runtime timeout milliseconds to timer-safe values", () => {
     expect(resolveMediaRuntimeTimeoutMs(Number.MAX_SAFE_INTEGER)).toBe(MAX_TIMER_TIMEOUT_MS);
     expect(resolveMediaRuntimeTimeoutMs(undefined)).toBe(30_000);
+  });
+});
+
+describe("resolvePrompt", () => {
+  it("suppresses the implicit English audio prompt for explicit non-English languages", () => {
+    expect(resolvePrompt("audio", undefined, undefined, "ru")).toBe("");
+    expect(resolvePrompt("audio", undefined, undefined, "zh-CN")).toBe("");
+  });
+
+  it("keeps explicit audio prompts and English defaults", () => {
+    expect(resolvePrompt("audio", "Transcribe verbatim.", undefined, "ru")).toBe(
+      "Transcribe verbatim.",
+    );
+    expect(resolvePrompt("audio", undefined, undefined, "en-US")).toBe("Transcribe the audio.");
+    expect(resolvePrompt("audio", undefined)).toBe("Transcribe the audio.");
+  });
+
+  it("keeps non-audio prompt length guidance unchanged", () => {
+    expect(resolvePrompt("image", undefined, 80, "ru")).toBe(
+      "Describe the image. Respond in at most 80 characters.",
+    );
   });
 });
 
