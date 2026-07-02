@@ -61,6 +61,34 @@ describe("resolvePromptContextTextDedupeKey", () => {
     ]);
   });
 
+  it("filters inline directive-tagged session rows using delivery-normalized text", () => {
+    const result = mergeTelegramPromptContextMessages({
+      sessionPromptMessages: [
+        {
+          message_id: "session:inline-reply-directive",
+          timestamp_ms: 1_778_474_760_000,
+          body: "hello [[reply_to_current]] world",
+        },
+      ],
+      cachePromptMessages: [
+        {
+          message_id: "736",
+          timestamp_ms: 1_778_474_760_000,
+          body: "hello world",
+        },
+      ],
+    });
+
+    expect(result.sessionOnlyPromptMessages).toEqual([]);
+    expect(result.promptMessages).toEqual([
+      {
+        message_id: "736",
+        timestamp_ms: 1_778_474_760_000,
+        body: "hello world",
+      },
+    ]);
+  });
+
   it("keeps both session and cache rows when visible text matches but timestamps differ", () => {
     const result = mergeTelegramPromptContextMessages({
       sessionPromptMessages: [
