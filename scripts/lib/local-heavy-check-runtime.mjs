@@ -254,7 +254,7 @@ export function acquireLocalHeavyCheckLockSync(params) {
         createdAt: new Date().toISOString(),
       });
       return () => {
-        fs.rmSync(lockDir, { recursive: true, force: true });
+        removeLockDirSync(lockDir);
       };
     } catch (error) {
       if (!isAlreadyExistsError(error)) {
@@ -263,7 +263,7 @@ export function acquireLocalHeavyCheckLockSync(params) {
 
       const owner = readOwnerFile(ownerPath);
       if (shouldReclaimLock({ owner, lockDir, staleLockMs })) {
-        fs.rmSync(lockDir, { recursive: true, force: true });
+        removeLockDirSync(lockDir);
         continue;
       }
 
@@ -351,7 +351,25 @@ function cleanupLegacyLockDirs(locksDir, staleLockMs) {
 
     const owner = readOwnerFile(path.join(legacyLockDir, "owner.json"));
     if (shouldReclaimLock({ owner, lockDir: legacyLockDir, staleLockMs })) {
-      fs.rmSync(legacyLockDir, { recursive: true, force: true });
+      removeLockDirSync(legacyLockDir);
+    }
+  }
+}
+
+function removeLockDirSync(lockDir) {
+  try {
+    for (const entry of fs.readdirSync(lockDir, { withFileTypes: true })) {
+      const entryPath = path.join(lockDir, entry.name);
+      if (entry.isDirectory() && !entry.isSymbolicLink()) {
+        fs.rmSync(entryPath, { recursive: true, force: true });
+        continue;
+      }
+      fs.unlinkSync(entryPath);
+    }
+    fs.rmdirSync(lockDir);
+  } catch (error) {
+    if (!isMissingPathError(error)) {
+      throw error;
     }
   }
 }
@@ -418,6 +436,10 @@ function readOwnerFile(ownerPath) {
 
 function isAlreadyExistsError(error) {
   return Boolean(error && typeof error === "object" && "code" in error && error.code === "EEXIST");
+}
+
+function isMissingPathError(error) {
+  return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
 }
 
 function shouldReclaimLock({ owner, lockDir, staleLockMs }) {
