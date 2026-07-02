@@ -57,6 +57,7 @@ describe("resolvePromptContextTextDedupeKey", () => {
     expect(result.promptMessages).toEqual([
       {
         message_id: "736",
+        sender: "OpenClaw",
         timestamp_ms: 1_778_474_760_000,
         body: "Yep - I'm here now.",
       },
@@ -142,6 +143,40 @@ describe("resolvePromptContextTextDedupeKey", () => {
     expect(result.promptMessages.map((message) => message.message_id)).toEqual([
       "session:assistant-with-reply-directive",
       "736",
+    ]);
+  });
+
+  it("keeps directive-tagged session rows when only a user cache row has matching visible text", () => {
+    const result = mergeTelegramPromptContextMessages({
+      sessionPromptMessages: [
+        {
+          message_id: "session:assistant-with-reply-directive",
+          sender: "OpenClaw",
+          timestamp_ms: 1_783_019_792_000,
+          body: "[[reply_to_current]]same visible text",
+        },
+      ],
+      cachePromptMessages: [
+        {
+          message_id: "807",
+          sender: "User",
+          timestamp_ms: 1_783_019_792_000,
+          body: "same visible text",
+        },
+        {
+          message_id: "808",
+          sender: "User",
+          timestamp_ms: 1_783_019_798_000,
+          body: "same visible text",
+        },
+      ],
+    });
+
+    expect(result.sessionOnlyPromptMessages).toHaveLength(1);
+    expect(result.promptMessages.map((message) => message.message_id)).toEqual([
+      "session:assistant-with-reply-directive",
+      "807",
+      "808",
     ]);
   });
 });

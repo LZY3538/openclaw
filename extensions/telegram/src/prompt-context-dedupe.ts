@@ -53,9 +53,12 @@ function isOpenClawSessionPromptMessage(message: TelegramPromptContextMessageFor
   return (
     typeof message.message_id === "string" &&
     message.message_id.startsWith("session:") &&
-    typeof message.sender === "string" &&
-    message.sender.startsWith("OpenClaw")
+    isOpenClawPromptMessage(message)
   );
+}
+
+function isOpenClawPromptMessage(message: TelegramPromptContextMessageForDedupe): boolean {
+  return typeof message.sender === "string" && message.sender.startsWith("OpenClaw");
 }
 
 function isWithinDirectiveTagCacheTimestampDrift(
@@ -78,19 +81,20 @@ export function resolvePromptContextTextDedupeKey(
 function shouldDropSessionPromptMessage(
   sessionMessage: TelegramPromptContextMessageForDedupe,
   cacheTextKeys: ReadonlySet<string>,
-  cacheTexts: readonly TelegramPromptContextNormalizedText[],
+  openClawCacheTextKeys: ReadonlySet<string>,
+  openClawCacheTexts: readonly TelegramPromptContextNormalizedText[],
 ): boolean {
   const exactKey = resolvePromptContextTextDedupeKey(sessionMessage);
-  if (exactKey !== undefined && cacheTextKeys.has(exactKey)) {
-    return true;
-  }
   const sessionText = resolvePromptContextNormalizedText(sessionMessage);
   if (!sessionText?.directiveTagsStripped || !isOpenClawSessionPromptMessage(sessionMessage)) {
-    return false;
+    return exactKey !== undefined && cacheTextKeys.has(exactKey);
+  }
+  if (exactKey !== undefined && openClawCacheTextKeys.has(exactKey)) {
+    return true;
   }
   // Telegram cache rows may still use send-completion time on released builds;
   // only directive-tagged synthetic assistant rows get near-time fallback dedupe.
-  return cacheTexts.some(
+  return openClawCacheTexts.some(
     (cacheText) =>
       cacheText.text === sessionText.text &&
       isWithinDirectiveTagCacheTimestampDrift(sessionText, cacheText),
@@ -109,11 +113,25 @@ export function mergeTelegramPromptContextMessages<
       .map((message) => resolvePromptContextTextDedupeKey(message))
       .filter((key) => key !== undefined),
   );
-  const cacheTexts = params.cachePromptMessages
+  const openClawCachePromptMessages = params.cachePromptMessages.filter((message) =>
+    isOpenClawPromptMessage(message),
+  );
+  const openClawCacheTextKeys = new Set(
+    openClawCachePromptMessages
+      .map((message) => resolvePromptContextTextDedupeKey(message))
+      .filter((key) => key !== undefined),
+  );
+  const openClawCacheTexts = openClawCachePromptMessages
     .map((message) => resolvePromptContextNormalizedText(message))
     .filter((text) => text !== undefined);
   const sessionOnlyPromptMessages = params.sessionPromptMessages.filter(
-    (message) => !shouldDropSessionPromptMessage(message, cacheTextKeys, cacheTexts),
+    (message) =>
+      !shouldDropSessionPromptMessage(
+        message,
+        cacheTextKeys,
+        openClawCacheTextKeys,
+        openClawCacheTexts,
+      ),
   );
   return {
     sessionOnlyPromptMessages,
