@@ -2540,8 +2540,9 @@ describe("agent event handler", () => {
       updatedAt: 2_100,
       abortedLastRun: false,
     });
+    expect(logErrorMock).toHaveBeenCalledTimes(1);
     expect(logErrorMock).toHaveBeenCalledWith(
-      "gateway: failed to persist terminal session lifecycle event for run run-failed-write: Error: disk full sk-abc…3456",
+      "gateway: terminal session persistence failed session=session-failed-write run=run-failed-write error=Error: disk full sk-abc…3456",
     );
     expect(markTrackedRunTerminalPersisted).not.toHaveBeenCalled();
   });
