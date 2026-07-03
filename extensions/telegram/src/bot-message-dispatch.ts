@@ -1743,7 +1743,21 @@ export const dispatchTelegramMessage = async ({
           cfg,
           account: { accountId: route.accountId },
           chatId: deliveryBaseOptions.chatId,
-          message: { message_id: result.delivery.messageId },
+          message: {
+            message_id: result.delivery.messageId,
+            ...(context.primaryCtx.me
+              ? {
+                  from: {
+                    id: context.primaryCtx.me.id,
+                    is_bot: context.primaryCtx.me.is_bot,
+                    first_name: context.primaryCtx.me.first_name,
+                    ...(context.primaryCtx.me.username
+                      ? { username: context.primaryCtx.me.username }
+                      : {}),
+                  },
+                }
+              : {}),
+          },
           messageId: result.delivery.messageId,
           text: promptContextContent,
           ...(promptContextTimestampMs !== undefined ? { promptContextTimestampMs } : {}),

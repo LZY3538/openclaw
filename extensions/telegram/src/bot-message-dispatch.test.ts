@@ -1623,7 +1623,11 @@ describe("dispatchTelegramMessage draft streaming", () => {
 
   it("marks durable non-preview finals with the transcript prompt-context timestamp", async () => {
     const transcriptTimestamp = Date.now() + 1_000;
-    const context = createContext();
+    const context = createContext({
+      primaryCtx: {
+        me: { id: 42, is_bot: true, first_name: "Molty", username: "molty_bot" },
+      } as unknown as TelegramMessageContext["primaryCtx"],
+    });
     context.ctxPayload.SessionKey = "agent:default:telegram:direct:123";
     mockDefaultSessionEntry();
     readLatestAssistantTextByIdentity.mockResolvedValue({
@@ -1771,6 +1775,9 @@ describe("dispatchTelegramMessage draft streaming", () => {
     expect(
       conversationContext.find((entry) => entry.node.messageId === "1497")?.node.timestamp,
     ).toBe(transcriptTimestamp);
+    expect(
+      conversationContext.find((entry) => entry.node.messageId === "1497")?.node.senderId,
+    ).toBe("42");
   });
 
   it("suppresses text-only tool payloads delivered after the final answer", async () => {
