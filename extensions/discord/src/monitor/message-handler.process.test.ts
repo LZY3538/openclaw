@@ -534,6 +534,7 @@ function getLastDispatchCtx():
       ChatType?: string;
       CommandBody?: string;
       From?: string;
+      GroupRequireMention?: boolean;
       MediaTranscribedIndexes?: number[];
       MessageSid?: string;
       MessageSidFull?: string;
@@ -557,6 +558,7 @@ function getLastDispatchCtx():
           ChatType?: string;
           CommandBody?: string;
           From?: string;
+          GroupRequireMention?: boolean;
           MediaTranscribedIndexes?: number[];
           MessageSid?: string;
           MessageSidFull?: string;
