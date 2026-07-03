@@ -1,4 +1,5 @@
 // Telegram tests cover bot message dispatch plugin behavior.
+import path from "node:path";
 import type { Bot } from "grammy";
 import {
   createPluginStateKeyedStoreForTests,
@@ -1623,11 +1624,7 @@ describe("dispatchTelegramMessage draft streaming", () => {
 
   it("marks durable non-preview finals with the transcript prompt-context timestamp", async () => {
     const transcriptTimestamp = Date.now() + 1_000;
-    const context = createContext({
-      primaryCtx: {
-        me: { id: 42, is_bot: true, first_name: "Molty", username: "molty_bot" },
-      } as unknown as TelegramMessageContext["primaryCtx"],
-    });
+    const context = createContext();
     context.ctxPayload.SessionKey = "agent:default:telegram:direct:123";
     mockDefaultSessionEntry();
     readLatestAssistantTextByIdentity.mockResolvedValue({
@@ -1715,7 +1712,11 @@ describe("dispatchTelegramMessage draft streaming", () => {
   it("records streamed final replies into the prompt context cache", async () => {
     const storePath = `/tmp/openclaw-telegram-stream-context-${process.pid}-${Date.now()}.json`;
     const transcriptTimestamp = Date.now() + 1_000;
-    const context = createContext();
+    const context = createContext({
+      primaryCtx: {
+        me: { id: 42, is_bot: true, first_name: "Molty", username: "molty_bot" },
+      } as unknown as TelegramMessageContext["primaryCtx"],
+    });
     context.ctxPayload.SessionKey = "agent:default:telegram:direct:123";
     mockDefaultSessionEntry();
     readLatestAssistantTextByIdentity.mockResolvedValue({
@@ -1723,25 +1724,37 @@ describe("dispatchTelegramMessage draft streaming", () => {
       timestamp: transcriptTimestamp,
     });
     setupDraftStreams({ answerMessageId: 1497 });
-    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
-      await dispatcherOptions.deliver(
-        { text: "Done already: timeoutSeconds is now 7200s." },
-        { kind: "final" },
-      );
-      return { queuedFinal: true };
-    });
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ dispatcherOptions, replyOptions }) => {
+        await replyOptions?.onPartialReply?.({ text: "Done already" });
+        await dispatcherOptions.deliver(
+          { text: "Done already: timeoutSeconds is now 7200s." },
+          { kind: "final" },
+        );
+        return { queuedFinal: true };
+      },
+    );
+    const recordPromptContext = vi.fn(recordOutboundMessageForPromptContextActual);
 
     await dispatchWithContext({
       context,
       cfg: { session: { store: storePath } },
       telegramDeps: {
         ...telegramDepsForTest,
-        recordOutboundMessageForPromptContext: recordOutboundMessageForPromptContextActual,
+        recordOutboundMessageForPromptContext: recordPromptContext,
       },
     });
 
+    expectRecordFields(mockCallArg(recordPromptContext), {
+      chatId: "123",
+      messageId: 1497,
+      text: "Done already: timeoutSeconds is now 7200s.",
+      messageThreadId: 777,
+      promptContextTimestampMs: transcriptTimestamp,
+    });
+
     const cache = createTelegramMessageCache({
-      scope: resolveTelegramMessageCacheScope(storePath),
+      scope: resolveTelegramMessageCacheScope(path.resolve(storePath)),
     });
     await cache.record({
       accountId: "default",
