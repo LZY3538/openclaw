@@ -147,6 +147,7 @@ import type {
 import { resolveEffectiveReplyRoute } from "./effective-reply-route.js";
 import { withFullRuntimeReplyConfig } from "./get-reply-fast-path.js";
 import type { ReplySessionBinding } from "./get-reply.types.js";
+import { resolveGroupRequireMention } from "./groups.js";
 import { claimInboundDedupe, commitInboundDedupe, releaseInboundDedupe } from "./inbound-dedupe.js";
 import { hasInboundAudio } from "./inbound-media.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
@@ -2203,11 +2204,18 @@ export async function dispatchReplyFromConfig(
             targetedClaimOutcome.status === "missing_plugin"
               ? "plugin-bound-fallback-missing-plugin"
               : "plugin-bound-fallback-no-handler";
-          if (
+          const isUnmentionedGroupFallback =
             (chatType === "group" || chatType === "channel") &&
             ctx.WasMentioned === false &&
-            !isExplicitSourceReplyCommand(ctx, cfg)
-          ) {
+            !explicitCommandTurnCtx;
+          const shouldSuppressUnmentionedFallback =
+            isUnmentionedGroupFallback &&
+            (await resolveGroupRequireMention({
+              cfg,
+              ctx,
+              groupResolution: groupResolution ?? undefined,
+            }));
+          if (shouldSuppressUnmentionedFallback) {
             markIdle("plugin_binding_fallback_unmentioned");
             recordProcessed("completed", { reason: pluginFallbackReason });
             commitInboundDedupeIfClaimed();
