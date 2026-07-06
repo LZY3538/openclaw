@@ -3449,9 +3449,10 @@ export const chatHandlers: GatewayRequestHandlers = {
       }
       if (res.aborted) {
         clearSessionQueues([canonicalAbortSessionKey]);
-        if (context.cfg) {
+        const stopCfg = context.getRuntimeConfig();
+        if (stopCfg) {
           stopSubagentsForRequester({
-            cfg: context.cfg,
+            cfg: stopCfg,
             requesterSessionKey: canonicalAbortSessionKey,
           });
         }
@@ -3627,9 +3628,10 @@ export const chatHandlers: GatewayRequestHandlers = {
     }
     if (res.aborted) {
       clearSessionQueues([active.sessionKey]);
-      if (context.cfg) {
+      const stopCfg = context.getRuntimeConfig();
+      if (stopCfg) {
         stopSubagentsForRequester({
-          cfg: context.cfg,
+          cfg: stopCfg,
           requesterSessionKey: active.sessionKey,
         });
       }
