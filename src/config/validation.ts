@@ -48,6 +48,7 @@ import { isRecord, resolveUserPath } from "../utils.js";
 import { findDuplicateAgentDirs, formatDuplicateAgentDirError } from "./agent-dirs.js";
 import { appendAllowedValuesHint, summarizeAllowedValues } from "./allowed-values.js";
 import { GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA } from "./bundled-channel-config-metadata.generated.js";
+import { parseNonNegativeByteSize } from "./byte-size.js";
 import {
   collectChannelDmPolicyMetadata,
   collectChannelSchemaMetadataWithOwnership,
@@ -1034,6 +1035,25 @@ function validateGatewayTailscaleAuth(config: OpenClawConfig): ConfigValidationI
   ];
 }
 
+function collectActiveTranscriptByteGuardWarnings(config: OpenClawConfig): ConfigValidationIssue[] {
+  const compaction = config.agents?.defaults?.compaction;
+  const maxActiveTranscriptBytes = parseNonNegativeByteSize(compaction?.maxActiveTranscriptBytes);
+  if (
+    maxActiveTranscriptBytes === null ||
+    maxActiveTranscriptBytes <= 0 ||
+    compaction?.truncateAfterCompaction === true
+  ) {
+    return [];
+  }
+  return [
+    {
+      path: "agents.defaults.compaction.maxActiveTranscriptBytes",
+      message:
+        "maxActiveTranscriptBytes is inactive unless agents.defaults.compaction.truncateAfterCompaction is true",
+    },
+  ];
+}
+
 /**
  * Validates config without applying runtime defaults.
  * Use this when you need the raw validated config (e.g., for writing back to file).
@@ -1202,16 +1222,17 @@ function validateConfigObjectWithPluginsBase(
         manifestRegistry: registryInfo?.registry,
       })
     : base.config;
+  const configWarnings = collectActiveTranscriptByteGuardWarnings(config);
   if (opts.pluginValidation === "skip") {
     return {
       ok: true,
       config,
-      warnings: [],
+      warnings: configWarnings,
     };
   }
 
   const issues: ConfigValidationIssue[] = [];
-  const warnings: ConfigValidationIssue[] = [];
+  const warnings: ConfigValidationIssue[] = [...configWarnings];
   const hasExplicitPluginsConfig = isRecord(raw) && Object.hasOwn(raw, "plugins");
   const explicitPluginReferences = collectExplicitPluginReferences(raw);
 

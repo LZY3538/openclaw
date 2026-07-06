@@ -9,7 +9,11 @@ import {
 import { readConfigFileSnapshot } from "./config.js";
 import { findLegacyConfigIssues } from "./legacy.js";
 import { buildWebSearchProviderConfig, withTempHome, writeOpenClawConfig } from "./test-helpers.js";
-import { validateConfigObject, validateConfigObjectRaw } from "./validation.js";
+import {
+  validateConfigObject,
+  validateConfigObjectRaw,
+  validateConfigObjectWithPlugins,
+} from "./validation.js";
 import { OpenClawSchema } from "./zod-schema.js";
 
 const nonBooleanConfigCases = [
@@ -1432,6 +1436,28 @@ describe("config strict validation", () => {
           process.env.OPENCLAW_BIND = prev;
         }
       }
+    });
+  });
+
+  it("warns when maxActiveTranscriptBytes cannot run without transcript rotation", () => {
+    const result = validateConfigObjectWithPlugins(
+      {
+        agents: {
+          defaults: {
+            compaction: {
+              maxActiveTranscriptBytes: "10b",
+            },
+          },
+        },
+      },
+      { pluginValidation: "skip" },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.warnings).toContainEqual({
+      path: "agents.defaults.compaction.maxActiveTranscriptBytes",
+      message:
+        "maxActiveTranscriptBytes is inactive unless agents.defaults.compaction.truncateAfterCompaction is true",
     });
   });
 

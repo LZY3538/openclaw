@@ -1694,6 +1694,47 @@ describe("doctor health contributions", () => {
     });
   });
 
+  it("reports inactive active-transcript byte guards in lint mode", async () => {
+    const contributionChecks = await resolveDoctorContributionHealthChecks();
+    const byteGuardCheck = contributionChecks.find(
+      (check) => check.id === "core/doctor/active-transcript-byte-guard",
+    );
+    expect(byteGuardCheck).toBeDefined();
+
+    await expect(
+      runDoctorLintChecks(
+        {
+          cfg: {
+            agents: {
+              defaults: {
+                compaction: {
+                  maxActiveTranscriptBytes: "10b",
+                },
+              },
+            },
+          },
+          mode: "lint" as const,
+          runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+        },
+        {
+          checks: [byteGuardCheck!],
+          onlyIds: ["core/doctor/active-transcript-byte-guard"],
+        },
+      ),
+    ).resolves.toMatchObject({
+      checksRun: 1,
+      checksSkipped: 0,
+      findings: [
+        expect.objectContaining({
+          checkId: "core/doctor/active-transcript-byte-guard",
+          severity: "warning",
+          path: "agents.defaults.compaction.maxActiveTranscriptBytes",
+          requirement: "truncate-after-compaction-required",
+        }),
+      ],
+    });
+  });
+
   it("keeps legacy plugin dependency lint opt-in and read-only", async () => {
     const previousStateDir = process.env.OPENCLAW_STATE_DIR;
     const tempDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "openclaw-legacy-plugin-deps-lint-"));

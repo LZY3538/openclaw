@@ -7,6 +7,7 @@ import {
   isLegacyParentWritableUpdateDoctorPass,
   UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE_ENV,
 } from "../commands/doctor/shared/update-phase.js";
+import { parseNonNegativeByteSize } from "../config/byte-size.js";
 import { resolveIsNixMode } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { buildGatewayConnectionDetails } from "../gateway/call.js";
@@ -795,6 +796,33 @@ type ToolResultCapTarget = {
   scopeLabel: string;
   target?: string;
 };
+
+const ACTIVE_TRANSCRIPT_BYTE_GUARD_CHECK_ID = "core/doctor/active-transcript-byte-guard";
+
+function collectActiveTranscriptByteGuardFindings(cfg: OpenClawConfig): readonly HealthFinding[] {
+  const compaction = cfg.agents?.defaults?.compaction;
+  const maxActiveTranscriptBytes = parseNonNegativeByteSize(compaction?.maxActiveTranscriptBytes);
+  if (
+    maxActiveTranscriptBytes === null ||
+    maxActiveTranscriptBytes <= 0 ||
+    compaction?.truncateAfterCompaction === true
+  ) {
+    return [];
+  }
+  return [
+    {
+      checkId: ACTIVE_TRANSCRIPT_BYTE_GUARD_CHECK_ID,
+      severity: "warning",
+      message:
+        "agents.defaults.compaction.maxActiveTranscriptBytes is set but inactive because truncateAfterCompaction is not true.",
+      path: "agents.defaults.compaction.maxActiveTranscriptBytes",
+      target: "agents.defaults.compaction.truncateAfterCompaction",
+      requirement: "truncate-after-compaction-required",
+      fixHint:
+        "Set agents.defaults.compaction.truncateAfterCompaction to true, or remove maxActiveTranscriptBytes.",
+    },
+  ];
+}
 
 async function collectToolResultCapFindings(
   cfg: OpenClawConfig,
@@ -1980,6 +2008,16 @@ export function resolveDoctorHealthContributions(): DoctorHealthContribution[] {
         detect: async (ctx) => collectToolResultCapFindings(ctx.cfg),
       },
       run: runToolResultCapHealth,
+    }),
+    createDoctorHealthContribution({
+      id: "doctor:active-transcript-byte-guard",
+      label: "Active transcript byte guard",
+      healthChecks: {
+        id: ACTIVE_TRANSCRIPT_BYTE_GUARD_CHECK_ID,
+        description:
+          "Detect maxActiveTranscriptBytes settings that cannot run without transcript rotation.",
+        detect: async (ctx) => collectActiveTranscriptByteGuardFindings(ctx.cfg),
+      },
     }),
     createDoctorHealthContribution({
       id: "doctor:provider-catalog-projection",
