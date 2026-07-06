@@ -56,7 +56,9 @@ import {
   readPairingQrReplyChannelData,
   type ReplyPayload,
 } from "../../auto-reply/reply-payload.js";
+import { stopSubagentsForRequester } from "../../auto-reply/reply/abort.js";
 import { isBtwRequestText } from "../../auto-reply/reply/btw-command.js";
+import { clearSessionQueues } from "../../auto-reply/reply/queue.js";
 import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.js";
 import { isReplyRunAbortableForSignal } from "../../auto-reply/reply/reply-run-registry.js";
 import {
@@ -3445,6 +3447,15 @@ export const chatHandlers: GatewayRequestHandlers = {
         respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "unauthorized"));
         return;
       }
+      if (res.aborted) {
+        clearSessionQueues([canonicalAbortSessionKey]);
+        if (context.cfg) {
+          stopSubagentsForRequester({
+            cfg: context.cfg,
+            requesterSessionKey: canonicalAbortSessionKey,
+          });
+        }
+      }
       respond(true, { ok: true, aborted: res.aborted, runIds: res.runIds });
       return;
     }
@@ -3613,6 +3624,15 @@ export const chatHandlers: GatewayRequestHandlers = {
           },
         ],
       });
+    }
+    if (res.aborted) {
+      clearSessionQueues([active.sessionKey]);
+      if (context.cfg) {
+        stopSubagentsForRequester({
+          cfg: context.cfg,
+          requesterSessionKey: active.sessionKey,
+        });
+      }
     }
     respond(true, {
       ok: true,
