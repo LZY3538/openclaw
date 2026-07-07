@@ -146,6 +146,57 @@ struct GatewayEndpointStoreTests {
         #expect(token == "my-secret-token")
     }
 
+    @Test func `resolve gateway token returns lowercase env-braced literal as-is`() {
+        // "${abc}" does not match the documented uppercase env-ref grammar
+        // and must be preserved as a literal credential, not silently dropped.
+        let token = GatewayEndpointStore._testResolveGatewayToken(
+            isRemote: false,
+            root: [
+                "gateway": [
+                    "auth": [
+                        "token": "${abc}", // pragma: allowlist secret
+                    ],
+                ],
+            ],
+            env: [:],
+            launchdSnapshot: nil)
+        #expect(token == "${abc}")
+    }
+
+    @Test func `resolve gateway token returns digit-leading env-braced literal as-is`() {
+        // "${123_VAR}" does not match the documented uppercase env-ref grammar
+        // and must be preserved as a literal credential, not silently dropped.
+        let token = GatewayEndpointStore._testResolveGatewayToken(
+            isRemote: false,
+            root: [
+                "gateway": [
+                    "auth": [
+                        "token": "${123_VAR}", // pragma: allowlist secret
+                    ],
+                ],
+            ],
+            env: [:],
+            launchdSnapshot: nil)
+        #expect(token == "${123_VAR}")
+    }
+
+    @Test func `resolve gateway token returns mixed-case env-braced literal as-is`() {
+        // "${OpenClaw_Token}" contains lowercase letters so it doesn't match
+        // the documented uppercase-only env-ref grammar.
+        let token = GatewayEndpointStore._testResolveGatewayToken(
+            isRemote: false,
+            root: [
+                "gateway": [
+                    "auth": [
+                        "token": "${OpenClaw_Token}", // pragma: allowlist secret
+                    ],
+                ],
+            ],
+            env: [:],
+            launchdSnapshot: nil)
+        #expect(token == "${OpenClaw_Token}")
+    }
+
     @Test func `remote password resolver trims remote config password`() {
         let root: [String: Any] = [
             "gateway": [
@@ -240,6 +291,40 @@ struct GatewayEndpointStoreTests {
             env: [:],
             launchdSnapshot: nil)
         #expect(password == "my-secret-password")
+    }
+
+    @Test func `resolve gateway password returns lowercase env-braced literal as-is`() {
+        // "${abc}" does not match the documented uppercase env-ref grammar
+        // and must be preserved as a literal credential, not silently dropped.
+        let password = GatewayEndpointStore._testResolveGatewayPassword(
+            isRemote: false,
+            root: [
+                "gateway": [
+                    "auth": [
+                        "password": "${abc}", // pragma: allowlist secret
+                    ],
+                ],
+            ],
+            env: [:],
+            launchdSnapshot: nil)
+        #expect(password == "${abc}")
+    }
+
+    @Test func `resolve gateway password returns digit-leading env-braced literal as-is`() {
+        // "${123_VAR}" does not match the documented uppercase env-ref grammar
+        // and must be preserved as a literal credential, not silently dropped.
+        let password = GatewayEndpointStore._testResolveGatewayPassword(
+            isRemote: false,
+            root: [
+                "gateway": [
+                    "auth": [
+                        "password": "${123_PASS}", // pragma: allowlist secret
+                    ],
+                ],
+            ],
+            env: [:],
+            launchdSnapshot: nil)
+        #expect(password == "${123_PASS}")
     }
 
     @Test func `connection mode resolver prefers config mode over defaults`() {

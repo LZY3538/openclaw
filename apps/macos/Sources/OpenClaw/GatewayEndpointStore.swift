@@ -89,13 +89,21 @@ actor GatewayEndpointStore {
     /// snapshot (which may carry the resolved token from the service's own
     /// `EnvironmentVariables`) instead of embedding the literal `${...}` string in the
     /// dashboard URL.
+    ///
+    /// Matches the character-class contract of OpenClaw's documented env-ref
+    /// grammar: only `${NAME}` where the name starts with an uppercase letter and
+    /// contains only uppercase letters, digits, and underscores is recognized as
+    /// an env placeholder. Lowercase or digit-leading braced strings (e.g.
+    /// `${abc}`, `${123_TOKEN}`) are treated as literal credential values,
+    /// preventing the resolver from silently dropping a real configured secret.
     private static func isUnresolvedEnvPlaceholder(_ value: String) -> Bool {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("${"), trimmed.hasSuffix("}"), trimmed.count > 3 else {
             return false
         }
         let inner = trimmed.dropFirst(2).dropLast(1)
-        return inner.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" } && !inner.isEmpty
+        guard let first = inner.first, first.isUppercase else { return false }
+        return inner.allSatisfy { $0.isUppercase || $0.isNumber || $0 == "_" }
     }
 
     private static func resolveGatewayPassword(
@@ -194,10 +202,9 @@ actor GatewayEndpointStore {
         if let configToken = self.resolveConfigToken(isRemote: isRemote, root: root),
            !configToken.isEmpty
         {
-            // Never return an unresolved ${...} placeholder as a real token.
-            // When the env var referenced by the placeholder is not in the
-            // process environment, fall through to the LaunchAgent snapshot
-            // so a gate that injects the token via the service plist can work.
+            // Fall through to the LaunchAgent snapshot when the env var
+            // referenced by the placeholder is not in the process environment —
+            // a gate injects the token via the service plist.
             if !self.isUnresolvedEnvPlaceholder(configToken) {
                 return configToken
             }
