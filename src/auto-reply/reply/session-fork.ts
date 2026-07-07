@@ -291,10 +291,17 @@ export async function forkSessionEntryFromParent(
   );
 }
 
+const PARENT_FORK_TOKEN_TIMEOUT_MS = 2_000;
+
 async function resolveParentForkTokenCount(params: {
   parentEntry: SessionEntry;
   storePath: string;
 }): Promise<number | undefined> {
   const runtime = await loadSessionForkRuntime();
-  return runtime.resolveParentForkTokenCountRuntime(params);
+  return Promise.race([
+    runtime.resolveParentForkTokenCountRuntime(params),
+    new Promise<undefined>((resolve) =>
+      setTimeout(() => resolve(undefined), PARENT_FORK_TOKEN_TIMEOUT_MS),
+    ),
+  ]);
 }
