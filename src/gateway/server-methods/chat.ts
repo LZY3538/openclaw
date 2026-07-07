@@ -56,7 +56,10 @@ import {
   readPairingQrReplyChannelData,
   type ReplyPayload,
 } from "../../auto-reply/reply-payload.js";
-import { stopSubagentsForRequester } from "../../auto-reply/reply/abort.js";
+import {
+  abortSessionRunTargetWithOutcome,
+  stopSubagentsForRequester,
+} from "../../auto-reply/reply/abort.js";
 import { isBtwRequestText } from "../../auto-reply/reply/btw-command.js";
 import { clearSessionQueues } from "../../auto-reply/reply/queue.js";
 import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.js";
@@ -3448,6 +3451,7 @@ export const chatHandlers: GatewayRequestHandlers = {
         return;
       }
       if (res.aborted) {
+        abortSessionRunTargetWithOutcome({ key: canonicalAbortSessionKey });
         clearSessionQueues([canonicalAbortSessionKey]);
         const stopCfg = context.getRuntimeConfig();
         if (stopCfg) {
@@ -3625,16 +3629,6 @@ export const chatHandlers: GatewayRequestHandlers = {
           },
         ],
       });
-    }
-    if (res.aborted) {
-      clearSessionQueues([active.sessionKey]);
-      const stopCfg = context.getRuntimeConfig();
-      if (stopCfg) {
-        stopSubagentsForRequester({
-          cfg: stopCfg,
-          requesterSessionKey: active.sessionKey,
-        });
-      }
     }
     respond(true, {
       ok: true,
