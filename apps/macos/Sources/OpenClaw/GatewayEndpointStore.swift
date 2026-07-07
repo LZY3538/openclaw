@@ -78,6 +78,26 @@ actor GatewayEndpointStore {
             ensureRemoteTunnel: { try await RemoteTunnelManager.shared.ensureControlTunnel() })
     }
 
+    /// Returns `true` when `value` looks like an unresolved `${ENV_VAR}` placeholder.
+    ///
+    /// Config values such as `gateway.auth.token = "${OPENCLAW_GATEWAY_TOKEN}"` are
+    /// literal strings when the referencing env var is not set in the process
+    /// environment. Passing the literal placeholder through as a real token causes the
+    /// dashboard to show an auth failure with no in-app recovery path.
+    ///
+    /// Detecting the placeholder lets callers fall through to the LaunchAgent plist
+    /// snapshot (which may carry the resolved token from the service's own
+    /// `EnvironmentVariables`) instead of embedding the literal `${...}` string in the
+    /// dashboard URL.
+    private static func isUnresolvedEnvPlaceholder(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("${"), trimmed.hasSuffix("}"), trimmed.count > 3 else {
+            return false
+        }
+        let inner = trimmed.dropFirst(2).dropLast(1)
+        return inner.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" } && !inner.isEmpty
+    }
+
     private static func resolveGatewayPassword(
         isRemote: Bool,
         root: [String: Any],
@@ -103,7 +123,9 @@ actor GatewayEndpointStore {
                let password = remote["password"] as? String
             {
                 let pw = password.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !pw.isEmpty {
+                if !pw.isEmpty,
+                   !self.isUnresolvedEnvPlaceholder(pw)
+                {
                     return pw
                 }
             }
@@ -114,7 +136,9 @@ actor GatewayEndpointStore {
            let password = auth["password"] as? String
         {
             let pw = password.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !pw.isEmpty {
+            if !pw.isEmpty,
+               !self.isUnresolvedEnvPlaceholder(pw)
+            {
                 return pw
             }
         }
@@ -170,7 +194,14 @@ actor GatewayEndpointStore {
         if let configToken = self.resolveConfigToken(isRemote: isRemote, root: root),
            !configToken.isEmpty
         {
-            return configToken
+            // Never return an unresolved ${...} placeholder as a real token.
+            // When the env var referenced by the placeholder is not in the
+            // process environment, fall through to the LaunchAgent snapshot
+            // so a gate that injects the token via the service plist can work.
+            if !self.isUnresolvedEnvPlaceholder(configToken) {
+                return configToken
+            }
+            // placeholder is unresolved; fall through to LaunchAgent fallback
         }
 
         if isRemote {
@@ -699,7 +730,8 @@ extension GatewayEndpointStore {
         var fragmentItems: [URLQueryItem] = []
         let tokenCandidate = authToken ?? config.token
         if let token = tokenCandidate?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !token.isEmpty
+           !token.isEmpty,
+           !Self.isUnresolvedEnvPlaceholder(token)
         {
             fragmentItems.append(URLQueryItem(name: "token", value: token))
         }

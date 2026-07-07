@@ -76,6 +76,76 @@ struct GatewayEndpointStoreTests {
         #expect(token == "remote-token")
     }
 
+    @Test func `resolve gateway token skips unresolved placeholder and falls back to launchd`() {
+        let snapshot = self.makeLaunchAgentSnapshot(
+            env: ["OPENCLAW_GATEWAY_TOKEN": "launchd-token"],
+            token: "launchd-token",
+            password: nil)
+
+        let token = GatewayEndpointStore._testResolveGatewayToken(
+            isRemote: false,
+            root: [
+                "gateway": [
+                    "auth": [
+                        "token": "${OPENCLAW_GATEWAY_TOKEN}",
+                    ],
+                ],
+            ],
+            env: [:],
+            launchdSnapshot: snapshot)
+        #expect(token == "launchd-token")
+    }
+
+    @Test func `resolve gateway token resolves placeholder from process env`() {
+        let snapshot = self.makeLaunchAgentSnapshot(
+            env: ["OPENCLAW_GATEWAY_TOKEN": "launchd-token"],
+            token: "launchd-token",
+            password: nil)
+
+        let token = GatewayEndpointStore._testResolveGatewayToken(
+            isRemote: false,
+            root: [
+                "gateway": [
+                    "auth": [
+                        "token": "${OPENCLAW_GATEWAY_TOKEN}",
+                    ],
+                ],
+            ],
+            env: ["OPENCLAW_GATEWAY_TOKEN": "env-token"],
+            launchdSnapshot: snapshot)
+        #expect(token == "env-token")
+    }
+
+    @Test func `resolve gateway token returns nil for unresolvable placeholder`() {
+        let token = GatewayEndpointStore._testResolveGatewayToken(
+            isRemote: false,
+            root: [
+                "gateway": [
+                    "auth": [
+                        "token": "${UNKNOWN_VAR}",
+                    ],
+                ],
+            ],
+            env: [:],
+            launchdSnapshot: nil)
+        #expect(token == nil)
+    }
+
+    @Test func `resolve gateway token returns literal config token when not a placeholder`() {
+        let token = GatewayEndpointStore._testResolveGatewayToken(
+            isRemote: false,
+            root: [
+                "gateway": [
+                    "auth": [
+                        "token": "my-secret-token", // pragma: allowlist secret
+                    ],
+                ],
+            ],
+            env: [:],
+            launchdSnapshot: nil)
+        #expect(token == "my-secret-token")
+    }
+
     @Test func `remote password resolver trims remote config password`() {
         let root: [String: Any] = [
             "gateway": [
@@ -100,6 +170,76 @@ struct GatewayEndpointStoreTests {
             env: [:],
             launchdSnapshot: snapshot)
         #expect(password == "launchd-pass")
+    }
+
+    @Test func `resolve gateway password skips unresolved placeholder and falls back to launchd`() {
+        let snapshot = self.makeLaunchAgentSnapshot(
+            env: ["OPENCLAW_GATEWAY_PASSWORD": "launchd-pass"],
+            token: nil,
+            password: "launchd-pass")
+
+        let password = GatewayEndpointStore._testResolveGatewayPassword(
+            isRemote: false,
+            root: [
+                "gateway": [
+                    "auth": [
+                        "password": "${OPENCLAW_GATEWAY_PASSWORD}",
+                    ],
+                ],
+            ],
+            env: [:],
+            launchdSnapshot: snapshot)
+        #expect(password == "launchd-pass")
+    }
+
+    @Test func `resolve gateway password resolves placeholder from process env`() {
+        let snapshot = self.makeLaunchAgentSnapshot(
+            env: ["OPENCLAW_GATEWAY_PASSWORD": "launchd-pass"],
+            token: nil,
+            password: "launchd-pass")
+
+        let password = GatewayEndpointStore._testResolveGatewayPassword(
+            isRemote: false,
+            root: [
+                "gateway": [
+                    "auth": [
+                        "password": "${OPENCLAW_GATEWAY_PASSWORD}",
+                    ],
+                ],
+            ],
+            env: ["OPENCLAW_GATEWAY_PASSWORD": "env-pass"],
+            launchdSnapshot: snapshot)
+        #expect(password == "env-pass")
+    }
+
+    @Test func `resolve gateway password returns nil for unresolvable placeholder`() {
+        let password = GatewayEndpointStore._testResolveGatewayPassword(
+            isRemote: false,
+            root: [
+                "gateway": [
+                    "auth": [
+                        "password": "${UNKNOWN_VAR}",
+                    ],
+                ],
+            ],
+            env: [:],
+            launchdSnapshot: nil)
+        #expect(password == nil)
+    }
+
+    @Test func `resolve gateway password returns literal password when not a placeholder`() {
+        let password = GatewayEndpointStore._testResolveGatewayPassword(
+            isRemote: false,
+            root: [
+                "gateway": [
+                    "auth": [
+                        "password": "my-secret-password", // pragma: allowlist secret
+                    ],
+                ],
+            ],
+            env: [:],
+            launchdSnapshot: nil)
+        #expect(password == "my-secret-password")
     }
 
     @Test func `connection mode resolver prefers config mode over defaults`() {
@@ -297,6 +437,20 @@ struct GatewayEndpointStoreTests {
             authToken: "device-token")
         #expect(url.absoluteString == "http://127.0.0.1:18789/control/#token=device-token")
         #expect(url.query == nil)
+    }
+
+    @Test func `dashboard URL skips unresolved placeholder token`() throws {
+        let config: GatewayConnection.Config = try (
+            url: #require(URL(string: "ws://127.0.0.1:18789")),
+            token: "${OPENCLAW_GATEWAY_TOKEN}",
+            password: nil)
+
+        let url = try GatewayEndpointStore.dashboardURL(
+            for: config,
+            mode: .local,
+            localBasePath: "/control")
+        #expect(url.absoluteString == "http://127.0.0.1:18789/control/")
+        #expect(url.fragment == nil)
     }
 
     @Test func `normalize gateway url adds default port for loopback ws`() {
