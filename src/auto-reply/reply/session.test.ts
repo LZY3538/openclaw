@@ -1259,6 +1259,64 @@ describe("initSessionState RawBody", () => {
     expect(store[sessionKey]?.pinnedAt).toBe(123);
   });
 
+  it("preserves label and displayName across an implicit daily stale rollover (#101451)", async () => {
+    // Regression: user-set session label and displayName persisted via the Control
+    // UI must survive the automatic daily/idle reset boundary, not just explicit
+    // /new and /reset. Previously label and displayName carryover was gated on
+    // resetTriggered, so the implicit stale rollover branch (resetTriggered ===
+    // false) dropped them silently.
+    const root = await makeCaseDir("openclaw-daily-rollover-label-");
+    const storePath = path.join(root, "sessions.json");
+    const sessionKey = "agent:main:dashboard:daily-rollover-label";
+    const existingSessionId = "session-before-daily-reset-label";
+    // Stale under the default daily reset (atHour 4): started ~48h ago.
+    const staleStartedAt = Date.now() - 48 * 60 * 60 * 1000;
+
+    await writeSessionStoreFast(storePath, {
+      [sessionKey]: {
+        sessionId: existingSessionId,
+        updatedAt: staleStartedAt,
+        sessionStartedAt: staleStartedAt,
+        lastInteractionAt: staleStartedAt,
+        systemSent: true,
+        // User-set sticky metadata (what the Control UI label input writes).
+        label: "Other",
+        displayName: "My Dashboard Session",
+      },
+    });
+
+    const cfg = {
+      session: { store: storePath },
+    } as OpenClawConfig;
+
+    const result = await initSessionState({
+      ctx: {
+        // Ordinary message — NOT a reset trigger.
+        RawBody: "hello again",
+        ChatType: "direct",
+        SessionKey: sessionKey,
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    // The session rolled over implicitly (stale), not via /new or /reset.
+    expect(result.isNewSession).toBe(true);
+    expect(result.resetTriggered).toBe(false);
+    expect(result.sessionId).not.toBe(existingSessionId);
+    // The user-set label and displayName must survive the implicit rollover.
+    expect(result.sessionEntry.label).toBe("Other");
+    expect(result.sessionEntry.displayName).toBe("My Dashboard Session");
+
+    // Also verify persistence to disk.
+    const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<
+      string,
+      { label?: string; displayName?: string }
+    >;
+    expect(store[sessionKey]?.label).toBe("Other");
+    expect(store[sessionKey]?.displayName).toBe("My Dashboard Session");
+  });
+
   it("preserves usage footer mode across daily rollover", async () => {
     const root = await makeCaseDir("openclaw-daily-rollover-usage-");
     const storePath = path.join(root, "sessions.json");
