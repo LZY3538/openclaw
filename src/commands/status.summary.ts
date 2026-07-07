@@ -432,7 +432,7 @@ export async function getStatusSummary(
             selectedModelComparisonLabel,
             configuredSessionModelComparisonLabel,
           ) &&
-          entry?.modelOverride != null;
+          (hasUserPinnedModelSelection(entry) || hasSessionAutoModelFallbackProvenance(entry));
         // Session rows show the live selected model and warn for user-pinned
         // differences as well as runtime fallback selections (#96126).
         const contextTokens =

@@ -1074,8 +1074,7 @@ export function buildStatusMessage(args: StatusArgs): string {
   const modelNote = channelModelNote ? ` · ${channelModelNote}` : "";
   const configuredDefaultModelLabel = normalizeOptionalString(args.configuredDefaultModelLabel);
   const sessionHasPersistedModelSelection = hasUserPinnedModelSelection(entry);
-  const sessionHasAutoFallback =
-    entry?.modelOverride != null && !hasUserPinnedModelSelection(entry);
+  const sessionHasAutoFallback = hasSessionAutoModelFallbackProvenance(entry);
   const configDefaultDiffersFromSession =
     (sessionHasPersistedModelSelection || sessionHasAutoFallback) &&
     configuredDefaultModelLabel &&
