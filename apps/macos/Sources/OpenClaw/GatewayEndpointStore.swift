@@ -78,35 +78,40 @@ actor GatewayEndpointStore {
             ensureRemoteTunnel: { try await RemoteTunnelManager.shared.ensureControlTunnel() })
     }
 
-    /// Returns `true` when `value` looks like an unresolved `${ENV_VAR}` placeholder.
+    /// Returns `true` when `value` looks like an unresolved env-var placeholder.
     ///
-    /// Config values such as `gateway.auth.token = "${OPENCLAW_GATEWAY_TOKEN}"` are
-    /// literal strings when the referencing env var is not set in the process
-    /// environment. Passing the literal placeholder through as a real token causes the
-    /// dashboard to show an auth failure with no in-app recovery path.
+    /// Detects both `${NAME}` and `$NAME` forms matching the documented SecretRef
+    /// env shorthand grammar (`^[A-Z][A-Z0-9_]{0,127}$`). Uses `Character.isASCII`
+    /// so that non-ASCII uppercase letters (e.g. É, Δ) and non-ASCII digits are
+    /// never misclassified. A 128-character upper-bound enforces the `{0,127}`
+    /// length contract.
     ///
-    /// Detecting the placeholder lets callers fall through to the LaunchAgent plist
-    /// snapshot (which may carry the resolved token from the service's own
-    /// `EnvironmentVariables`) instead of embedding the literal `${...}` string in the
-    /// dashboard URL.
-    ///
-    /// Matches the TypeScript env-ref grammar (`^[A-Z][A-Z0-9_]{0,127}$`)
-    /// character-for-character using ASCII range checks so that non-ASCII
-    /// uppercase letters (e.g. É, Δ) and non-ASCII digits are never
-    /// misclassified as unresolved env placeholders. A 128-character
-    /// upper-bound enforces the grammar's `{0,127}` length contract.
+    /// Config values such as `"${OPENCLAW_GATEWAY_TOKEN}"` are literal strings
+    /// when the referenced env var is absent from the process environment. Passing
+    /// the literal placeholder through as a real token locks users out of the
+    /// dashboard with no in-app recovery path. Detecting the placeholder lets
+    /// callers fall through to the LaunchAgent plist snapshot instead.
     private static func isUnresolvedEnvPlaceholder(_ value: String) -> Bool {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("${"), trimmed.hasSuffix("}"), trimmed.count > 3 else {
+
+        // Parse the env-var name from either ${NAME} or $NAME shorthand.
+        let name: Substring
+        if trimmed.hasPrefix("${"), trimmed.hasSuffix("}"), trimmed.count > 3 {
+            name = trimmed.dropFirst(2).dropLast(1)
+        } else if trimmed.hasPrefix("$"), trimmed.count > 1 {
+            name = trimmed.dropFirst()
+        } else {
             return false
         }
-        let inner = trimmed.dropFirst(2).dropLast(1)
-        guard let first = inner.first else { return false }
-        // Match TS ENV_SECRET_TEMPLATE_RE: ^[A-Z][A-Z0-9_]{0,127}$
-        guard ("A"..."Z").contains(first) else { return false }
-        guard inner.count <= 128 else { return false }
-        return inner.allSatisfy { c in
-            ("A"..."Z").contains(c) || ("0"..."9").contains(c) || c == "_"
+
+        // Match TS ENV_SECRET_TEMPLATE_RE / ENV_SECRET_SHORTHAND_RE:
+        //   ^[A-Z][A-Z0-9_]{0,127}$
+        guard let first = name.first, first.isASCII, first.isUppercase else {
+            return false
+        }
+        guard name.count <= 128 else { return false }
+        return name.allSatisfy { c in
+            c.isASCII && (c.isUppercase || c.isNumber || c == "_")
         }
     }
 

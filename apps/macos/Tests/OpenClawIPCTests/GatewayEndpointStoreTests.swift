@@ -104,7 +104,32 @@ struct GatewayEndpointStoreTests {
         #expect(!GatewayEndpointStore._testIsUnresolvedEnvPlaceholder(""))
     }
 
+    // $NAME shorthand
+
+    @Test func `placeholder detects dollar name shorthand`() {
+        #expect(GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("$OPENCLAW_GATEWAY_TOKEN"))
+    }
+
+    @Test func `placeholder detects single char dollar shorthand`() {
+        #expect(GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("$A"))
+    }
+
+    @Test func `placeholder rejects lowercase dollar shorthand`() {
+        #expect(!GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("$abc"))
+    }
+
+    @Test func `placeholder rejects digit leading dollar shorthand`() {
+        #expect(!GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("$123_TOKEN"))
+    }
+
+    @Test func `placeholder rejects escaped dollar brace still`() {
+        // $${VAR} is escaped; starts with $$, not a single $
+        #expect(!GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("$${MY_TOKEN}"))
+    }
+
     // MARK: - Token resolution tests
+
+    @Test func `resolve gateway token prefers env and falls back to launchd`() {
         let snapshot = self.makeLaunchAgentSnapshot(
             env: ["OPENCLAW_GATEWAY_TOKEN": "launchd-token"],
             token: "launchd-token",
@@ -293,6 +318,28 @@ struct GatewayEndpointStoreTests {
         #expect(token == "${_SECRET}")
     }
 
+    @Test func `resolve gateway token skips dollar name shorthand and falls back to launchd`() {
+        // $NAME is the documented SecretRef shorthand — must be treated
+        // the same as ${NAME} for LaunchAgent fallback.
+        let snapshot = self.makeLaunchAgentSnapshot(
+            env: ["OPENCLAW_GATEWAY_TOKEN": "launchd-token"],
+            token: "launchd-token",
+            password: nil)
+
+        let token = GatewayEndpointStore._testResolveGatewayToken(
+            isRemote: false,
+            root: [
+                "gateway": [
+                    "auth": [
+                        "token": "$OPENCLAW_GATEWAY_TOKEN",
+                    ],
+                ],
+            ],
+            env: [:],
+            launchdSnapshot: snapshot)
+        #expect(token == "launchd-token")
+    }
+
     @Test func `remote password resolver trims remote config password`() {
         let root: [String: Any] = [
             "gateway": [
@@ -421,6 +468,28 @@ struct GatewayEndpointStoreTests {
             env: [:],
             launchdSnapshot: nil)
         #expect(password == "${123_PASS}")
+    }
+
+    @Test func `resolve gateway password skips dollar name shorthand and falls back to launchd`() {
+        // $NAME is the documented SecretRef shorthand — must be treated
+        // the same as ${NAME} for LaunchAgent fallback.
+        let snapshot = self.makeLaunchAgentSnapshot(
+            env: ["OPENCLAW_GATEWAY_PASSWORD": "launchd-pass"],
+            token: nil,
+            password: "launchd-pass")
+
+        let password = GatewayEndpointStore._testResolveGatewayPassword(
+            isRemote: false,
+            root: [
+                "gateway": [
+                    "auth": [
+                        "password": "$OPENCLAW_GATEWAY_PASSWORD",
+                    ],
+                ],
+            ],
+            env: [:],
+            launchdSnapshot: snapshot)
+        #expect(password == "launchd-pass")
     }
 
     @Test func `connection mode resolver prefers config mode over defaults`() {
