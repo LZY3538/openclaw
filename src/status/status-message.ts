@@ -1074,15 +1074,19 @@ export function buildStatusMessage(args: StatusArgs): string {
   const modelNote = channelModelNote ? ` · ${channelModelNote}` : "";
   const configuredDefaultModelLabel = normalizeOptionalString(args.configuredDefaultModelLabel);
   const sessionHasPersistedModelSelection = hasUserPinnedModelSelection(entry);
+  const sessionHasAutoFallback =
+    entry?.modelOverride != null && !hasUserPinnedModelSelection(entry);
   const configDefaultDiffersFromSession =
-    sessionHasPersistedModelSelection &&
+    (sessionHasPersistedModelSelection || sessionHasAutoFallback) &&
     configuredDefaultModelLabel &&
     selectedModelLabel !== configuredDefaultModelLabel &&
     !areRuntimeModelRefsEquivalent(selectedModelLabel, configuredDefaultModelLabel, {
       config: args.config,
     });
   const overrideLabel = configDefaultDiffersFromSession
-    ? ` · pinned session; config primary ${configuredDefaultModelLabel} · clear /model default`
+    ? sessionHasPersistedModelSelection
+      ? ` · pinned session; config primary ${configuredDefaultModelLabel} · clear /model default`
+      : ` · auto fallback; config primary ${configuredDefaultModelLabel} · check provider`
     : "";
   const modelLines = [
     `🧠 Model: ${selectedModelLabel}${selectedAuthLabel}${modelNote}${overrideLabel}`,
