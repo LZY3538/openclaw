@@ -1,7 +1,5 @@
 // Gateway session listing and projection helpers.
 // Normalizes persisted session stores into UI/RPC rows without mutating state.
-import fs from "node:fs";
-import path from "node:path";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,

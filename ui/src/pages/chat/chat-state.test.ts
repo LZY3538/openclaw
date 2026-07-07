@@ -7,7 +7,9 @@ import {
 import { refreshChatMetadata, resolveChatAvatarUrl, type ChatPageHost } from "./chat-state.ts";
 
 const { mockLoadLocalAssistantIdentity } = vi.hoisted(() => ({
-  mockLoadLocalAssistantIdentity: vi.fn(() => ({ avatar: "data:image/png;base64,bG9jYWw=" })),
+  mockLoadLocalAssistantIdentity: vi.fn<() => { avatar: string | null }>(() => ({
+    avatar: "data:image/png;base64,bG9jYWw=",
+  })),
 }));
 
 vi.mock("../../app/assistant-identity.ts", async (importOriginal) => ({
