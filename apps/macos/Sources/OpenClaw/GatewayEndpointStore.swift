@@ -90,20 +90,24 @@ actor GatewayEndpointStore {
     /// `EnvironmentVariables`) instead of embedding the literal `${...}` string in the
     /// dashboard URL.
     ///
-    /// Matches the character-class contract of OpenClaw's documented env-ref
-    /// grammar: only `${NAME}` where the name starts with an uppercase letter and
-    /// contains only uppercase letters, digits, and underscores is recognized as
-    /// an env placeholder. Lowercase or digit-leading braced strings (e.g.
-    /// `${abc}`, `${123_TOKEN}`) are treated as literal credential values,
-    /// preventing the resolver from silently dropping a real configured secret.
+    /// Matches the TypeScript env-ref grammar (`^[A-Z][A-Z0-9_]{0,127}$`)
+    /// character-for-character using ASCII range checks so that non-ASCII
+    /// uppercase letters (e.g. É, Δ) and non-ASCII digits are never
+    /// misclassified as unresolved env placeholders. A 128-character
+    /// upper-bound enforces the grammar's `{0,127}` length contract.
     private static func isUnresolvedEnvPlaceholder(_ value: String) -> Bool {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("${"), trimmed.hasSuffix("}"), trimmed.count > 3 else {
             return false
         }
         let inner = trimmed.dropFirst(2).dropLast(1)
-        guard let first = inner.first, first.isUppercase else { return false }
-        return inner.allSatisfy { $0.isUppercase || $0.isNumber || $0 == "_" }
+        guard let first = inner.first else { return false }
+        // Match TS ENV_SECRET_TEMPLATE_RE: ^[A-Z][A-Z0-9_]{0,127}$
+        guard ("A"..."Z").contains(first) else { return false }
+        guard inner.count <= 128 else { return false }
+        return inner.allSatisfy { c in
+            ("A"..."Z").contains(c) || ("0"..."9").contains(c) || c == "_"
+        }
     }
 
     private static func resolveGatewayPassword(
@@ -777,6 +781,10 @@ extension GatewayEndpointStore {
         launchdSnapshot: LaunchAgentPlistSnapshot? = nil) -> String?
     {
         self.resolveGatewayToken(isRemote: isRemote, root: root, env: env, launchdSnapshot: launchdSnapshot)
+    }
+
+    static func _testIsUnresolvedEnvPlaceholder(_ value: String) -> Bool {
+        self.isUnresolvedEnvPlaceholder(value)
     }
 
     static func _testResolveGatewayBindMode(

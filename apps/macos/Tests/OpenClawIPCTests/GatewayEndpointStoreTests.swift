@@ -26,7 +26,85 @@ struct GatewayEndpointStoreTests {
         return defaults
     }
 
-    @Test func `resolve gateway token prefers env and falls back to launchd`() {
+    // MARK: - isUnresolvedEnvPlaceholder unit tests
+
+    @Test func `placeholder detects uppercase env var name`() {
+        #expect(GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("${OPENCLAW_GATEWAY_TOKEN}"))
+    }
+
+    @Test func `placeholder detects single uppercase char as minimum valid`() {
+        #expect(GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("${A}"))
+    }
+
+    @Test func `placeholder detects uppercase letters digits and underscores`() {
+        #expect(GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("${A_1}"))
+    }
+
+    @Test func `placeholder detects 128 char uppercase name length boundary`() {
+        let name = String(repeating: "A", count: 128)
+        #expect(GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("${\(name)}"))
+    }
+
+    @Test func `placeholder trims surrounding whitespace before checking`() {
+        #expect(GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("  ${MY_TOKEN}  "))
+    }
+
+    @Test func `placeholder rejects lowercase first character`() {
+        #expect(!GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("${abc}"))
+    }
+
+    @Test func `placeholder rejects mixed case in name`() {
+        #expect(!GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("${ABCdef}"))
+    }
+
+    @Test func `placeholder rejects digit as first character`() {
+        #expect(!GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("${123_VAR}"))
+    }
+
+    @Test func `placeholder rejects underscore as first character`() {
+        #expect(!GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("${_SECRET}"))
+    }
+
+    @Test func `placeholder rejects nonASCII uppercase letter`() {
+        // É (U+00C9) is Unicode uppercase but not ASCII A-Z
+        #expect(!GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("${\u{00C9}LI_TOKEN}"))
+    }
+
+    @Test func `placeholder rejects nonASCII digit`() {
+        // \u{0660} is Arabic-Indic digit zero — Unicode Nd but not ASCII 0-9
+        #expect(!GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("${TOKEN\u{0660}}"))
+    }
+
+    @Test func `placeholder rejects name exceeding 128 chars`() {
+        let name = String(repeating: "A", count: 129)
+        #expect(!GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("${\(name)}"))
+    }
+
+    @Test func `placeholder rejects value without dollar brace prefix`() {
+        #expect(!GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("MY_TOKEN"))
+    }
+
+    @Test func `placeholder rejects empty braces`() {
+        #expect(!GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("${}"))
+    }
+
+    @Test func `placeholder rejects whitespace only in braces`() {
+        #expect(!GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("${ }"))
+    }
+
+    @Test func `placeholder rejects double dollar escaped syntax`() {
+        // $${VAR} is an escaped literal, not an env reference
+        #expect(!GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("$${MY_TOKEN}"))
+    }
+
+    @Test func `placeholder rejects string shorter than four chars`() {
+        #expect(!GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("${}"))
+        #expect(!GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("${"))
+        #expect(!GatewayEndpointStore._testIsUnresolvedEnvPlaceholder("}"))
+        #expect(!GatewayEndpointStore._testIsUnresolvedEnvPlaceholder(""))
+    }
+
+    // MARK: - Token resolution tests
         let snapshot = self.makeLaunchAgentSnapshot(
             env: ["OPENCLAW_GATEWAY_TOKEN": "launchd-token"],
             token: "launchd-token",
@@ -195,6 +273,24 @@ struct GatewayEndpointStoreTests {
             env: [:],
             launchdSnapshot: nil)
         #expect(token == "${OpenClaw_Token}")
+    }
+
+    @Test func `resolve gateway token returns underscore first env braced literal as-is`() {
+        // "${_SECRET}" — underscore-first env names are NOT recognized as
+        // env placeholders by the macOS native resolver (they match the
+        // TypeScript env-substitution pattern but not the SecretRef grammar).
+        let token = GatewayEndpointStore._testResolveGatewayToken(
+            isRemote: false,
+            root: [
+                "gateway": [
+                    "auth": [
+                        "token": "${_SECRET}", // pragma: allowlist secret
+                    ],
+                ],
+            ],
+            env: [:],
+            launchdSnapshot: nil)
+        #expect(token == "${_SECRET}")
     }
 
     @Test func `remote password resolver trims remote config password`() {
