@@ -2146,6 +2146,35 @@ describe("runWithModelFallback", () => {
     expect(run2).toHaveBeenCalledTimes(1);
   });
 
+  it("re-throws LiveSessionModelSwitchError for an auth-profile-only switch (same model, different credentials) (#101676)", async () => {
+    // When a user changes credentials (authProfileId) without changing
+    // the model, isLiveSessionModelSwitchTargetInCandidates must return
+    // false so the outer retry loop can apply the new auth profile via
+    // applyLiveModelSwitchToRun.  Treating it as an in-chain stale switch
+    // would wrap it as FailoverError and discard the credential change.
+    const cfg = makeCfg();
+    const switchError = new LiveSessionModelSwitchError({
+      provider: "openai",
+      model: "gpt-4.1-mini",
+      authProfileId: "profile-b",
+      authProfileIdSource: "user",
+    });
+    const run = vi.fn().mockRejectedValue(switchError);
+
+    const err = await runWithModelFallback({
+      cfg,
+      provider: "openai",
+      model: "gpt-4.1-mini",
+      run,
+    }).catch((e: unknown) => e);
+
+    // Must re-throw so the outer loop applies authProfileId.
+    expect(err).toBeInstanceOf(LiveSessionModelSwitchError);
+    expect((err as LiveSessionModelSwitchError).authProfileId).toBe("profile-b");
+    expect((err as LiveSessionModelSwitchError).authProfileIdSource).toBe("user");
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back to the configured haiku candidate for retryable provider failures", async () => {
     await expectFallsBackToHaiku({
       provider: "openai",

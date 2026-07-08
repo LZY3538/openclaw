@@ -713,6 +713,14 @@ function isLiveSessionModelSwitchTargetInCandidates(params: {
   error: LiveSessionModelSwitchError;
   candidates: ModelCandidate[];
 }): boolean {
+  // Auth-profile-only switches must reach the outer retry loop so
+  // err.authProfileId and err.authProfileIdSource are applied via
+  // applyLiveModelSwitchToRun / normalizeAgentCommandModelRef.
+  // Treating them as an in-chain stale switch would wrap them as
+  // FailoverError and discard the credential change.
+  if (params.error.authProfileId) {
+    return false;
+  }
   const targetKey = modelKey(params.error.provider, params.error.model);
   return params.candidates.some(
     (candidate) => modelKey(candidate.provider, candidate.model) === targetKey,
