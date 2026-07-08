@@ -2175,6 +2175,32 @@ describe("runWithModelFallback", () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
+  it("re-throws LiveSessionModelSwitchError when clearing auth profile on the same model (#101676)", async () => {
+    // Clearing an existing auth profile produces authProfileId=undefined
+    // but authProfileIdSource is set.  The guard must treat this as a
+    // non-candidate switch so the outer loop can clear run.authProfileId.
+    const cfg = makeCfg();
+    const switchError = new LiveSessionModelSwitchError({
+      provider: "openai",
+      model: "gpt-4.1-mini",
+      authProfileId: undefined,
+      authProfileIdSource: "user",
+    });
+    const run = vi.fn().mockRejectedValue(switchError);
+
+    const err = await runWithModelFallback({
+      cfg,
+      provider: "openai",
+      model: "gpt-4.1-mini",
+      run,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(LiveSessionModelSwitchError);
+    expect((err as LiveSessionModelSwitchError).authProfileId).toBeUndefined();
+    expect((err as LiveSessionModelSwitchError).authProfileIdSource).toBe("user");
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back to the configured haiku candidate for retryable provider failures", async () => {
     await expectFallsBackToHaiku({
       provider: "openai",

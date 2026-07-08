@@ -718,7 +718,7 @@ function isLiveSessionModelSwitchTargetInCandidates(params: {
   // applyLiveModelSwitchToRun / normalizeAgentCommandModelRef.
   // Treating them as an in-chain stale switch would wrap them as
   // FailoverError and discard the credential change.
-  if (params.error.authProfileId) {
+  if (params.error.authProfileId || params.error.authProfileIdSource) {
     return false;
   }
   const targetKey = modelKey(params.error.provider, params.error.model);
