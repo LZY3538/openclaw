@@ -336,7 +336,9 @@ type ParentForkTokenResolution =
   | { status: "unresolved" };
 
 function resolveAfter<T>(value: T, ms: number): Promise<T> {
-  return new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
+  return new Promise<T>((resolve) => {
+    setTimeout(() => resolve(value), ms);
+  });
 }
 
 async function resolveParentForkTokenCount(params: {

@@ -25,7 +25,10 @@ import path from "node:path";
 // ── Inject filesystem latency (simulate a slow mount) ────────────────
 let openDelayMs = 0;
 let statDelayMs = 0;
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 
 const realOpen = nodeFs.promises.open.bind(nodeFs.promises);
 // The bounded transcript tail read opens the file handle here.
