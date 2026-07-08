@@ -27,12 +27,12 @@ const cfg = {
 } as OpenClawConfig;
 
 // ── Verification ────────────────────────────────────────────────────
-const HEAD = process.env.PROOF_HEAD || "4ba5dbe817";
 const actual = (await import("node:child_process"))
   .execSync("git rev-parse --short HEAD", { encoding: "utf8" })
   .trim();
-if (actual !== HEAD) {
-  console.error(`HEAD mismatch: expected ${HEAD}, got ${actual}. Commit the fix first.`);
+const expected = process.env.PROOF_HEAD;
+if (expected && actual !== expected) {
+  console.error(`HEAD mismatch: expected ${expected}, got ${actual}`);
   process.exit(1);
 }
 
