@@ -59,7 +59,7 @@ function success(msg: string): void {
 }
 
 function separator(): void {
-  console.log(`${"-".repeat(68)}`);
+  console.log("-".repeat(68));
 }
 
 // ── Production-equivalent outer retry loop ─────────────────────────────
@@ -319,7 +319,7 @@ async function main(): Promise<void> {
   console.log("");
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   console.error(`${RED}${BOLD}FATAL:${RESET}`, err);
   process.exit(1);
 });
