@@ -38,7 +38,7 @@ export function buildInboundLine(params: {
   const { cfg, msg, agentId, previousTimestamp, envelope } = params;
   // WhatsApp inbound prefix: channels.whatsapp.messagePrefix > legacy messages.messagePrefix > identity/defaults
   const messagePrefix = resolveMessagePrefix(cfg, agentId, {
-    configured: cfg.channels?.whatsapp?.messagePrefix,
+    channel: "whatsapp",
     hasAllowFrom: (cfg.channels?.whatsapp?.allowFrom?.length ?? 0) > 0,
   });
   const admission = requireWhatsAppInboundAdmission(msg);
