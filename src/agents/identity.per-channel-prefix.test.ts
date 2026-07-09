@@ -373,7 +373,7 @@ describe("resolveMessagePrefix with per-channel override", () => {
         channels: {
           telegram: { messagePrefix: "" },
         },
-      } satisfies OpenClawConfig);
+      } as OpenClawConfig);
       expect(resolveMessagePrefix(cfg, "main", { channel: "telegram" })).toBe("");
     });
 
@@ -384,7 +384,7 @@ describe("resolveMessagePrefix with per-channel override", () => {
           telegram: { messagePrefix: "" },
           discord: { messagePrefix: "🤖 " },
         },
-      } satisfies OpenClawConfig);
+      } as OpenClawConfig);
       expect(resolveMessagePrefix(cfg, "main", { channel: "whatsapp" })).toBe("[WA Bot] ");
       expect(resolveMessagePrefix(cfg, "main", { channel: "telegram" })).toBe("");
       expect(resolveMessagePrefix(cfg, "main", { channel: "discord" })).toBe("🤖 ");
