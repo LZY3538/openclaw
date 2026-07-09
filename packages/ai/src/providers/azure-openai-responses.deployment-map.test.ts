@@ -50,7 +50,9 @@ async function withCapturedModel(
       response.end(JSON.stringify({ error: { message: "captured" } }));
     });
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
   const previousMap = process.env.AZURE_OPENAI_DEPLOYMENT_NAME_MAP;
   process.env.AZURE_OPENAI_DEPLOYMENT_NAME_MAP = deploymentMap;
   configureAiTransportHost({
@@ -66,7 +68,9 @@ async function withCapturedModel(
     } else {
       process.env.AZURE_OPENAI_DEPLOYMENT_NAME_MAP = previousMap;
     }
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
   }
   return capturedModel;
 }
