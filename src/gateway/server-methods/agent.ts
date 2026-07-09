@@ -1,7 +1,7 @@
 // Gateway agent methods implement agent.run, agent.wait, agent.reset, identity,
 // and related session-aware RPC handlers used by UI and operator clients.
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { isFutureDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import {
@@ -32,6 +32,7 @@ import {
   type AgentRunTerminalOutcome,
 } from "../../agents/agent-run-terminal-outcome.js";
 import { listAgentIds, resolveDefaultAgentId } from "../../agents/agent-scope.js";
+import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
 import { resolveTrustedGroupId } from "../../agents/agent-tools.policy.js";
 import {
   consumeExecApprovalFollowupRuntimeHandoff,
@@ -142,8 +143,10 @@ import {
   beginSessionWorkAdmission,
   type SessionWorkAdmissionLease,
 } from "../../sessions/session-lifecycle-admission.js";
+import { AVATAR_MAX_BYTES, isPathWithinRoot } from "../../shared/avatar-policy.js";
 import { createRunningTaskRun, finalizeTaskRunByRunId } from "../../tasks/detached-task-runtime.js";
 import type { TaskStatus } from "../../tasks/task-registry.types.js";
+import { resolveUserPath } from "../../utils.js";
 import {
   getGeneratedMediaTaskIdsForSessionKey,
   hasNewGeneratedMediaTaskForSessionKey,
@@ -3976,13 +3979,23 @@ export const agentHandlers: GatewayRequestHandlers = {
     }
     const cfg = context.getRuntimeConfig();
     const identity = resolveAssistantIdentity({ cfg, agentId });
+    const avatarResolution = resolveAgentAvatar(cfg, identity.agentId, { includeUiOverride: true });
+    // Read workspace-relative avatars as data URIs so <img> tags can
+    // render them without making unauthenticated /avatar/<agentId> requests.
+    let avatar = identity.avatar;
+    if (avatarResolution.kind === "local") {
+      const workspaceDir = resolveAgentWorkspaceDir(cfg, identity.agentId);
+      const dataUrl = readLocalAvatarDataUrl(avatarResolution.filePath, workspaceDir);
+      if (dataUrl) {
+        avatar = dataUrl;
+      }
+    }
     const avatarValue =
       resolveAssistantAvatarUrl({
-        avatar: identity.avatar,
+        avatar,
         agentId: identity.agentId,
         basePath: cfg.gateway?.controlUi?.basePath,
       }) ?? identity.avatar;
-    const avatarResolution = resolveAgentAvatar(cfg, identity.agentId, { includeUiOverride: true });
     respond(
       true,
       {
