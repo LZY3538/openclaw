@@ -213,6 +213,42 @@ describe("buildSlackThreadingToolContext", () => {
     expect(result.replyToMode).toBe("first");
   });
 
+  it("anchors to CurrentMessageId when ReplyToId is omitted for a non-reply message (first mode)", () => {
+    const result = buildSlackThreadingToolContext({
+      cfg: {
+        channels: { slack: { replyToMode: "first" } },
+      } as OpenClawConfig,
+      accountId: null,
+      context: {
+        ChatType: "channel",
+        To: "channel:C1",
+        CurrentMessageId: "1771999998.834199",
+        // ReplyToId intentionally omitted: the gated resolver drops it for
+        // non-reply messages, but the message-tool anchor must survive.
+      },
+    });
+
+    expect(result.currentThreadTs).toBe("1771999998.834199");
+    expect(result.replyToMode).toBe("first");
+  });
+
+  it("anchors to CurrentMessageId when ReplyToId is omitted for a non-reply message (batched mode)", () => {
+    const result = buildSlackThreadingToolContext({
+      cfg: {
+        channels: { slack: { replyToMode: "batched" } },
+      } as OpenClawConfig,
+      accountId: null,
+      context: {
+        ChatType: "channel",
+        To: "channel:C1",
+        CurrentMessageId: "1771999998.834199",
+      },
+    });
+
+    expect(result.currentThreadTs).toBe("1771999998.834199");
+    expect(result.replyToMode).toBe("batched");
+  });
+
   it("keeps configured channel behavior when not in a thread", () => {
     const cfg = {
       channels: {
