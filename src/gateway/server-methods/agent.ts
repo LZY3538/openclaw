@@ -1,7 +1,7 @@
 // Gateway agent methods implement agent.run, agent.wait, agent.reset, identity,
 // and related session-aware RPC handlers used by UI and operator clients.
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { isFutureDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import {
@@ -143,10 +143,8 @@ import {
   beginSessionWorkAdmission,
   type SessionWorkAdmissionLease,
 } from "../../sessions/session-lifecycle-admission.js";
-import { AVATAR_MAX_BYTES, isPathWithinRoot } from "../../shared/avatar-policy.js";
 import { createRunningTaskRun, finalizeTaskRunByRunId } from "../../tasks/detached-task-runtime.js";
 import type { TaskStatus } from "../../tasks/task-registry.types.js";
-import { resolveUserPath } from "../../utils.js";
 import {
   getGeneratedMediaTaskIdsForSessionKey,
   hasNewGeneratedMediaTaskForSessionKey,
@@ -189,6 +187,7 @@ import {
   canonicalizeSpawnedByForAgent,
   loadSessionEntry,
   migrateAndPruneGatewaySessionStoreKey,
+  readLocalAvatarDataUrl,
   resolveDeletedAgentIdFromSessionKey,
   resolveFreshestSessionEntryFromStoreKeys,
   resolveGatewaySessionStoreTarget,

@@ -965,6 +965,33 @@ describe("handleControlUiHttpRequest", () => {
     });
   });
 
+  it("inlines a workspace-local assistant avatar as a data URI in bootstrap config (#97602)", async () => {
+    await withControlUiRoot({
+      fn: async (tmp) => {
+        // A real workspace-relative avatar file must be projected as an inline
+        // data URI so the Personal card <img> renders without hitting the
+        // auth-gated /avatar/<agentId> route.
+        await fs.writeFile(path.join(tmp, "avatar.png"), "avatar-bytes\n");
+        const { res, end } = makeMockHttpResponse();
+        const handled = await handleControlUiHttpRequest(
+          { url: CONTROL_UI_BOOTSTRAP_CONFIG_PATH, method: "GET" } as IncomingMessage,
+          res,
+          {
+            root: { kind: "resolved", path: tmp },
+            config: {
+              agents: { defaults: { workspace: tmp } },
+              ui: { assistant: { name: "Ops", avatar: "avatar.png" } },
+            },
+          },
+        );
+        expect(handled).toBe(true);
+        const parsed = parseBootstrapPayload(end);
+        expect(parsed.assistantAvatar.startsWith("data:image/png;base64,")).toBe(true);
+        expect(parsed.assistantAvatar).not.toContain("/avatar/main");
+      },
+    });
+  });
+
   it("rejects bootstrap config requests without a valid auth token when auth is enabled", async () => {
     await withControlUiRoot({
       fn: async (tmp) => {

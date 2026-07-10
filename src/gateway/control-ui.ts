@@ -9,6 +9,7 @@ import {
   asDateTimestampMs,
   resolveTimestampMsToIsoString,
 } from "@openclaw/normalization-core/number-coercion";
+import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { resolveAgentAvatar, resolvePublicAgentAvatarSource } from "../agents/identity-avatar.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { matchRootFileOpenFailure, openRootFileSync } from "../infra/boundary-file-read.js";
@@ -66,6 +67,7 @@ import {
 import { authorizeOperatorScopesForMethod } from "./method-scopes.js";
 import { resolveRequestClientIp } from "./net.js";
 import { resolveSharedGatewaySessionGeneration } from "./server/ws-shared-generation.js";
+import { readLocalAvatarDataUrl } from "./session-utils.js";
 
 const ROOT_PREFIX = "/";
 const CONTROL_UI_ASSISTANT_MEDIA_PREFIX = "/__openclaw__/assistant-media";
@@ -1013,16 +1015,28 @@ export async function handleControlUiHttpRequest(
     const identity = config
       ? resolveAssistantIdentity({ cfg: config, agentId: opts?.agentId })
       : DEFAULT_ASSISTANT_IDENTITY;
+    const avatarResolution = config
+      ? resolveAgentAvatar(config, identity.agentId, { includeUiOverride: true })
+      : null;
+    // Read workspace-relative avatars as inline data URIs so the Personal card
+    // <img> renders them without unauthenticated /avatar/<agentId> requests.
+    // Mirrors agent.identity.get so both projections stay consistent (#97602).
+    let bootstrapAvatar = identity.avatar;
+    if (config && avatarResolution?.kind === "local") {
+      const dataUrl = readLocalAvatarDataUrl(
+        avatarResolution.filePath,
+        resolveAgentWorkspaceDir(config, identity.agentId),
+      );
+      if (dataUrl) {
+        bootstrapAvatar = dataUrl;
+      }
+    }
     const avatarValue = resolveAssistantAvatarUrl({
-      avatar: identity.avatar,
+      avatar: bootstrapAvatar,
       agentId: identity.agentId,
       basePath,
     });
-    const avatarMeta = config
-      ? controlUiAvatarResolutionMeta(
-          resolveAgentAvatar(config, identity.agentId, { includeUiOverride: true }),
-        )
-      : controlUiAvatarResolutionMeta(null);
+    const avatarMeta = controlUiAvatarResolutionMeta(avatarResolution);
     if (req.method === "HEAD") {
       res.statusCode = 200;
       res.setHeader("Content-Type", "application/json; charset=utf-8");

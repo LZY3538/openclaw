@@ -96,7 +96,7 @@ import {
   resolveAvatarMime,
 } from "../shared/avatar-policy.js";
 import { resolveNonNegativeNumber } from "../shared/number-coercion.js";
-import { truncateUtf16Safe } from "../utils.js";
+import { resolveUserPath, truncateUtf16Safe } from "../utils.js";
 import { normalizeSessionDeliveryFields } from "../utils/delivery-context.shared.js";
 import type { ModelCostConfig } from "../utils/usage-format.js";
 import { estimateUsageCost, resolveModelCostConfig } from "../utils/usage-format.js";
@@ -168,6 +168,47 @@ const DERIVED_TITLE_MAX_LEN = 60;
 function tryResolveExistingPath(value: string): string | null {
   try {
     return fs.realpathSync(value);
+  } catch {
+    return null;
+  }
+}
+
+const AVATAR_MIME_BY_EXT: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+};
+
+/**
+ * Read a validated workspace-local avatar file into a data URI. Shared by every
+ * Gateway avatar projection (agent.identity.get, Control UI bootstrap config) so
+ * `<img>` tags render workspace avatars without hitting the auth-gated
+ * `/avatar/<agentId>` route. Gateway-internal — NOT re-exported on the Plugin
+ * SDK surface. Returns null on any failure so callers fall back to the route URL.
+ */
+export function readLocalAvatarDataUrl(filePath: string, workspaceDir: string): string | null {
+  try {
+    // Canonicalise the workspace root (resolveSymlinks) so the containment
+    // check matches the realpath'd filePath from resolveAgentAvatar.
+    const workspaceRoot = fs.realpathSync(resolveUserPath(workspaceDir));
+    if (!isPathWithinRoot(workspaceRoot, filePath)) {
+      return null;
+    }
+    const realPath = fs.realpathSync(filePath);
+    if (!isPathWithinRoot(workspaceRoot, realPath)) {
+      return null;
+    }
+    const stat = fs.statSync(realPath);
+    if (!stat.isFile() || stat.size > AVATAR_MAX_BYTES) {
+      return null;
+    }
+    const buf = fs.readFileSync(realPath);
+    const ext = path.extname(realPath).toLowerCase().replace(".", "");
+    const mime = AVATAR_MIME_BY_EXT[ext] ?? "application/octet-stream";
+    return `data:${mime};base64,${buf.toString("base64")}`;
   } catch {
     return null;
   }
