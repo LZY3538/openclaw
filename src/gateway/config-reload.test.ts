@@ -1828,7 +1828,12 @@ describe("startGatewayConfigReloader watcher error recovery", () => {
     vi.restoreAllMocks();
   });
 
-  function startReloaderWithWatchers(watchers: ReturnType<typeof createWatcherMock>[]) {
+  function startReloaderWithWatchers(
+    watchers: ReturnType<typeof createWatcherMock>[],
+    readSnapshot: (() => Promise<ConfigFileSnapshot>) & { mock?: unknown } = vi.fn(async () =>
+      makeSnapshot(),
+    ),
+  ) {
     const watchSpy = vi.spyOn(chokidar, "watch");
     let watcherIndex = 0;
     watchSpy.mockImplementation((_path, options) => {
@@ -1842,7 +1847,7 @@ describe("startGatewayConfigReloader watcher error recovery", () => {
     const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const reloader = startGatewayConfigReloader({
       initialConfig: { gateway: { reload: { debounceMs: 0 } } },
-      readSnapshot: vi.fn(async () => makeSnapshot()),
+      readSnapshot,
       initialPluginInstallRecords: {},
       readPluginInstallRecords: async () => ({}),
       onNoopConfigCommit: vi.fn(async () => {}),
@@ -1851,7 +1856,7 @@ describe("startGatewayConfigReloader watcher error recovery", () => {
       log,
       watchPath: "/tmp/openclaw.json",
     });
-    return { watchSpy, log, reloader };
+    return { watchSpy, log, reloader, readSnapshot };
   }
 
   it("re-creates the watcher with backoff after a transient error", async () => {
@@ -1876,6 +1881,79 @@ describe("startGatewayConfigReloader watcher error recovery", () => {
     expect(log.error).not.toHaveBeenCalled();
 
     await reloader.stop();
+  });
+
+  it("reconciles against on-disk config after re-creating the watcher post-error", async () => {
+    // An external edit (manual, or `openclaw doctor --fix`) can land while the
+    // watcher is down during error-recovery backoff. The re-created watcher uses
+    // ignoreInitial:true, so it emits no event for that edit — a fresh reconcile
+    // read must run after recreation to pick it up.
+    const first = createWatcherMock();
+    const second = createWatcherMock();
+    const readSnapshot = vi.fn(async () => makeSnapshot());
+    const { watchSpy, log, reloader } = startReloaderWithWatchers([first, second], readSnapshot);
+
+    // Startup already applied initialConfig without reading; no reconcile yet.
+    expect(readSnapshot).not.toHaveBeenCalled();
+
+    first.emit("error");
+    await vi.advanceTimersByTimeAsync(500);
+    expect(watchSpy).toHaveBeenCalledTimes(2);
+
+    // Flush the reconcile read scheduled after the fresh watcher is created.
+    await vi.advanceTimersByTimeAsync(1);
+    expect(readSnapshot).toHaveBeenCalledTimes(1);
+    expect(log.error).not.toHaveBeenCalled();
+
+    await reloader.stop();
+  });
+
+  it("reconciles against on-disk config after degrading to polling mode", async () => {
+    const originalVitest = process.env.VITEST;
+    const originalChokidarPolling = process.env.CHOKIDAR_USEPOLLING;
+    delete process.env.VITEST;
+    delete process.env.CHOKIDAR_USEPOLLING;
+    let reloader: { stop: () => Promise<void>; hotReloadStatus: () => string } | undefined;
+    try {
+      // Native phase: initial watcher + 3 re-creates = 4 watchers, then 1 polling re-create.
+      const watchers = Array.from({ length: 5 }, () => createWatcherMock());
+      const readSnapshot = vi.fn(async () => makeSnapshot());
+      const started = startReloaderWithWatchers(watchers, readSnapshot);
+      const { watchSpy, log } = started;
+      reloader = started.reloader;
+
+      // Drive the native retries to exhaustion (each recreate reconciles too).
+      watchers[0]?.emit("error");
+      await vi.advanceTimersByTimeAsync(500);
+      watchers[1]?.emit("error");
+      await vi.advanceTimersByTimeAsync(2000);
+      watchers[2]?.emit("error");
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(watchSpy).toHaveBeenCalledTimes(4);
+
+      // Fourth native error degrades to polling and re-creates the watcher.
+      watchers[3]?.emit("error");
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("degrading to polling mode"));
+      const readsBeforePollingRecreate = readSnapshot.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(500);
+      expect(watchSpy).toHaveBeenCalledTimes(5);
+
+      // The polling-degrade recreate path must reconcile too.
+      await vi.advanceTimersByTimeAsync(1);
+      expect(readSnapshot.mock.calls.length).toBeGreaterThan(readsBeforePollingRecreate);
+    } finally {
+      if (originalVitest === undefined) {
+        delete process.env.VITEST;
+      } else {
+        process.env.VITEST = originalVitest;
+      }
+      if (originalChokidarPolling === undefined) {
+        delete process.env.CHOKIDAR_USEPOLLING;
+      } else {
+        process.env.CHOKIDAR_USEPOLLING = originalChokidarPolling;
+      }
+      await reloader?.stop();
+    }
   });
 
   it("degrades to polling then disables after both native and polling retries are exhausted", async () => {
