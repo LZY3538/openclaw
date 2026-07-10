@@ -4,7 +4,12 @@ import { defineSingleProviderPluginEntry } from "openclaw/plugin-sdk/provider-en
 import { buildProviderReplayFamilyHooks } from "openclaw/plugin-sdk/provider-model-shared";
 import { buildProviderToolCompatFamilyHooks } from "openclaw/plugin-sdk/provider-tools";
 import { NOVITA_DEFAULT_MODEL_REF } from "./models.js";
-import { buildNovitaProvider } from "./provider-catalog.js";
+import {
+  buildNovitaApiKeyCatalog,
+  buildNovitaProvider,
+  buildStaticNovitaProvider,
+  resolveNovitaDiscoveryApiKey,
+} from "./provider-catalog.js";
 
 const PROVIDER_ID = "novita";
 
@@ -32,15 +37,35 @@ export default defineSingleProviderPluginEntry({
       },
     ],
     catalog: {
-      buildProvider: buildNovitaProvider,
-      buildStaticProvider: buildNovitaProvider,
-      allowExplicitBaseUrl: true,
+      run: buildNovitaApiKeyCatalog,
+      staticRun: async () => ({ provider: buildStaticNovitaProvider() }),
     },
-    augmentModelCatalog: ({ config }) =>
-      readConfiguredProviderCatalogEntries({
-        config,
+    augmentModelCatalog: async (ctx) => {
+      const configured = readConfiguredProviderCatalogEntries({
+        config: ctx.config,
         providerId: PROVIDER_ID,
-      }),
+      });
+      const provider = await buildNovitaProvider({
+        discoveryApiKey: resolveNovitaDiscoveryApiKey(ctx),
+      });
+      const entries = [...configured];
+      const seen = new Set(entries.map((entry) => entry.id));
+      for (const model of provider.models) {
+        if (seen.has(model.id)) {
+          continue;
+        }
+        seen.add(model.id);
+        entries.push({
+          provider: PROVIDER_ID,
+          id: model.id,
+          name: model.name,
+          contextWindow: model.contextWindow,
+          reasoning: model.reasoning,
+          input: model.input,
+        });
+      }
+      return entries;
+    },
     ...buildProviderReplayFamilyHooks({
       family: "openai-compatible",
       dropReasoningFromHistory: false,

@@ -44,9 +44,10 @@ export NOVITA_API_KEY="<your-novita-api-key>" # pragma: allowlist secret
 - `novita/deepseek/deepseek-r1-0528`
 - `novita/qwen/qwen3-235b-a22b-fp8`
 
-This is a starting point, not a live catalog. Your account, region, or
-Novita's current offering may add, remove, or restrict routes. Check before
-setting a long-lived default:
+This is the offline fallback catalog. With a configured Novita API key,
+OpenClaw fetches the current account catalog before listing or registering
+model routes. Your account, region, or Novita's current offering may add,
+remove, or restrict routes. Check before setting a long-lived default:
 
 ```bash
 openclaw models list --provider novita
