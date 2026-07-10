@@ -23,44 +23,30 @@ export function parseAzureDeploymentNameMap(value: string | undefined): Map<stri
   return map;
 }
 
-// Azure deployment maps come from a stable env var, so the resolver runs on hot paths
-// (streams, lifecycle hooks) with the same string every call. Cache the parsed lookups
-// per raw string to avoid re-parsing, with a small bound so memory stays flat even if a
-// caller ever varies the input.
-const MAX_CACHED_DEPLOYMENT_MAPS = 32;
-
 interface DeploymentNameLookup {
-  /** Exact-case keys, preserving the original deployment-map semantics. */
+  source: string | undefined;
   exact: Map<string, string>;
-  /** Lowercased keys, used only as a case-insensitive fallback. */
-  lower: Map<string, string>;
+  folded: Map<string, string>;
 }
 
-const deploymentLookupCache = new Map<string, DeploymentNameLookup>();
+let cachedDeploymentLookup: DeploymentNameLookup | undefined;
 
-/** Returns a cached exact + lowercased lookup pair for a deployment-map string. */
-function getCachedDeploymentLookup(deploymentMap: string | undefined): DeploymentNameLookup {
-  const cacheKey = deploymentMap ?? "";
-  const cached = deploymentLookupCache.get(cacheKey);
-  if (cached) {
+function getDeploymentLookup(source: string | undefined): DeploymentNameLookup {
+  const cached = cachedDeploymentLookup;
+  if (cached && cached.source === source) {
     return cached;
   }
-  const exact = parseAzureDeploymentNameMap(deploymentMap);
-  // Lowercased index for the case-insensitive fallback; deployment names (the values)
-  // stay verbatim because Azure requires the exact deployment name.
-  const lower = new Map<string, string>();
+
+  const exact = parseAzureDeploymentNameMap(source);
+  const folded = new Map<string, string>();
   for (const [modelId, deploymentName] of exact) {
-    lower.set(modelId.toLowerCase(), deploymentName);
+    folded.set(modelId.toLowerCase(), deploymentName);
   }
-  if (deploymentLookupCache.size >= MAX_CACHED_DEPLOYMENT_MAPS) {
-    const oldest = deploymentLookupCache.keys().next().value;
-    if (oldest !== undefined) {
-      deploymentLookupCache.delete(oldest);
-    }
-  }
-  const lookup: DeploymentNameLookup = { exact, lower };
-  deploymentLookupCache.set(cacheKey, lookup);
-  return lookup;
+
+  // Process configuration is stable on hot paths; replacing one source-keyed slot
+  // avoids reparsing without retaining obsolete maps or changing deployment value casing.
+  cachedDeploymentLookup = { source, exact, folded };
+  return cachedDeploymentLookup;
 }
 
 /**
@@ -74,13 +60,6 @@ export function resolveAzureDeploymentNameFromMap(params: {
   modelId: string;
   deploymentMap?: string;
 }): string {
-  const { exact, lower } = getCachedDeploymentLookup(params.deploymentMap);
-  return exact.get(params.modelId) ?? lower.get(params.modelId.toLowerCase()) ?? params.modelId;
+  const { exact, folded } = getDeploymentLookup(params.deploymentMap);
+  return exact.get(params.modelId) ?? folded.get(params.modelId.toLowerCase()) ?? params.modelId;
 }
-
-export const testing = {
-  getCachedDeploymentLookup,
-  resetDeploymentNameMapCache: (): void => {
-    deploymentLookupCache.clear();
-  },
-};
