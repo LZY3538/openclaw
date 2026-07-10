@@ -626,6 +626,10 @@ const GITHUB_WORKFLOW_OWNER_TEST_TARGETS = new Map([
 ]);
 const TOOLING_SOURCE_TEST_TARGETS = new Map([
   ["Dockerfile", ROOT_DOCKERFILE_TEST_TARGETS],
+  [
+    ".agents/skills/openclaw-changelog-update/scripts/verify-release-notes.mjs",
+    ["test/scripts/release-notes-ledger.test.ts", "test/scripts/verify-release-notes.test.ts"],
+  ],
   [".crabbox.yaml", ["test/scripts/package-acceptance-workflow.test.ts"]],
   [".github/actions/detect-docs-changes/action.yml", ["test/scripts/ci-workflow-guards.test.ts"]],
   [
@@ -1003,6 +1007,7 @@ const TOOLING_SOURCE_TEST_TARGETS = new Map([
     ["test/scripts/openclaw-cross-os-release-workflow.test.ts"],
   ],
   ["scripts/mobile-release-ref.ts", ["test/scripts/mobile-release-ref.test.ts"]],
+  ["scripts/apple-release-source-check.sh", ["test/scripts/apple-release-source-check.test.ts"]],
   ["scripts/android-release.sh", ["test/scripts/android-release-wrapper-args.test.ts"]],
   ["scripts/android-release-signing.mjs", ["test/scripts/android-release-signing.test.ts"]],
   ["scripts/android-release-upload.sh", ["test/scripts/android-release-wrapper-args.test.ts"]],
@@ -1012,7 +1017,10 @@ const TOOLING_SOURCE_TEST_TARGETS = new Map([
   ],
   ["apps/android/fastlane/Fastfile", ["test/scripts/android-release-fastlane-gates.test.ts"]],
   ["scripts/ios-release-archive.sh", ["test/scripts/ios-release-wrapper-args.test.ts"]],
-  ["scripts/ios-release-prepare.sh", ["test/scripts/ios-release-wrapper-args.test.ts"]],
+  [
+    "scripts/ios-release-prepare.sh",
+    ["test/scripts/ios-release-prepare.test.ts", "test/scripts/ios-release-wrapper-args.test.ts"],
+  ],
   ["scripts/ios-release-signing.mjs", ["test/scripts/ios-release-signing.test.ts"]],
   ["apps/ios/fastlane/Fastfile", ["test/scripts/ios-release-fastlane-gates.test.ts"]],
   [
@@ -1238,6 +1246,16 @@ const TOOLING_SOURCE_TEST_TARGETS = new Map([
     ],
   ],
   [
+    "scripts/lib/build-metadata.sh",
+    [
+      "src/docker-setup.e2e.test.ts",
+      "test/scripts/apple-release-source-check.test.ts",
+      "test/scripts/ios-version.test.ts",
+      "test/scripts/package-mac-app.test.ts",
+      "test/scripts/test-install-sh-docker.test.ts",
+    ],
+  ],
+  [
     "scripts/lib/plistbuddy.sh",
     [
       "test/scripts/create-dmg.test.ts",
@@ -1415,6 +1433,7 @@ const TOOLING_SOURCE_TEST_TARGETS = new Map([
   ],
   ["scripts/podman/openclaw.container.in", ["test/scripts/test-install-sh-docker.test.ts"]],
   ["scripts/ios-run.sh", ["test/scripts/ios-run.test.ts"]],
+  ["scripts/ios-write-version-xcconfig.sh", ["test/scripts/ios-version.test.ts"]],
   ["scripts/create-dmg.sh", ["test/scripts/create-dmg.test.ts"]],
   ["scripts/kova-ci-summary.mjs", ["test/scripts/kova-ci-summary.test.ts"]],
   ["scripts/make_appcast.sh", ["test/scripts/make-appcast.test.ts"]],
@@ -1433,6 +1452,7 @@ const TOOLING_SOURCE_TEST_TARGETS = new Map([
     ["test/scripts/plugin-npm-runtime-build-args.test.ts"],
   ],
   ["scripts/package-changelog.mjs", ["test/scripts/package-changelog.test.ts"]],
+  ["scripts/render-github-release-notes.mjs", ["test/scripts/render-github-release-notes.test.ts"]],
   ["scripts/package-mac-app.sh", ["test/scripts/package-mac-app.test.ts"]],
   ["scripts/package-mac-dist.sh", ["test/scripts/package-mac-dist.test.ts"]],
   [
@@ -1655,7 +1675,7 @@ const TOOLING_SOURCE_TEST_TARGETS = new Map([
   ],
   [
     "scripts/e2e/lib/codex-npm-plugin-live/assertions.mjs",
-    ["test/scripts/docker-build-helper.test.ts"],
+    ["test/scripts/codex-install-assertions.test.ts", "test/scripts/docker-build-helper.test.ts"],
   ],
   ["scripts/e2e/lib/codex-install-utils.mjs", ["test/scripts/codex-install-assertions.test.ts"]],
   [
@@ -3259,7 +3279,11 @@ function resolveDocsI18nGoTargets(changedPath) {
   if (!/^scripts\/docs-i18n\/(?:go\.(?:mod|sum)|[^/]+\.go)$/u.test(changedPath)) {
     return null;
   }
-  return ["test/scripts/docs-i18n.test.ts"];
+  const targets = ["test/scripts/docs-i18n.test.ts"];
+  if (changedPath === "scripts/docs-i18n/go.mod") {
+    targets.push("test/scripts/ci-workflow-guards.test.ts");
+  }
+  return targets;
 }
 
 function resolveK8sManifestTargets(changedPath) {

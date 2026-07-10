@@ -64,12 +64,10 @@ export type AgentWaitParams = SchemaType<"AgentWaitParams">;
 export type WakeParams = SchemaType<"WakeParams">;
 
 /** Node pairing, presence, invoke, and pending-queue protocol payloads. */
-export type NodePairRequestParams = SchemaType<"NodePairRequestParams">;
 export type NodePairListParams = SchemaType<"NodePairListParams">;
 export type NodePairApproveParams = SchemaType<"NodePairApproveParams">;
 export type NodePairRejectParams = SchemaType<"NodePairRejectParams">;
 export type NodePairRemoveParams = SchemaType<"NodePairRemoveParams">;
-export type NodePairVerifyParams = SchemaType<"NodePairVerifyParams">;
 export type NodeRenameParams = SchemaType<"NodeRenameParams">;
 export type NodeListParams = SchemaType<"NodeListParams">;
 export type NodePendingAckParams = SchemaType<"NodePendingAckParams">;
@@ -335,6 +333,7 @@ export type DevicePairRejectParams = SchemaType<"DevicePairRejectParams">;
 export type DevicePairRemoveParams = SchemaType<"DevicePairRemoveParams">;
 export type DevicePairSetupCodeParams = SchemaType<"DevicePairSetupCodeParams">;
 export type DevicePairSetupCodeResult = SchemaType<"DevicePairSetupCodeResult">;
+export type DevicePairRenameParams = SchemaType<"DevicePairRenameParams">;
 export type DeviceTokenRotateParams = SchemaType<"DeviceTokenRotateParams">;
 export type DeviceTokenRevokeParams = SchemaType<"DeviceTokenRevokeParams">;
 export type ChatAbortParams = SchemaType<"ChatAbortParams">;

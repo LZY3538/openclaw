@@ -1,4 +1,5 @@
 // Package Acceptance Workflow tests cover package acceptance workflow script behavior.
+import { execFileSync, spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -55,6 +56,14 @@ type WorkflowStep = {
   with?: Record<string, string>;
 };
 
+type WorkflowMatrixEntry = {
+  advisory?: boolean;
+  command?: string;
+  profiles?: string;
+  suite_group?: string;
+  suite_id?: string;
+};
+
 type WorkflowJob = {
   concurrency?: {
     group?: string;
@@ -66,6 +75,11 @@ type WorkflowJob = {
   needs?: string | string[];
   permissions?: Record<string, string>;
   "runs-on"?: string;
+  strategy?: {
+    matrix?: {
+      include?: WorkflowMatrixEntry[];
+    };
+  };
   "timeout-minutes"?: number | string;
   steps?: WorkflowStep[];
 };
@@ -105,6 +119,16 @@ function workflowStep(job: WorkflowJob, stepName: string): WorkflowStep {
   return step;
 }
 
+function workflowMatrixEntry(path: string, jobName: string, suiteId: string): WorkflowMatrixEntry {
+  const entry = workflowJob(path, jobName).strategy?.matrix?.include?.find(
+    (candidate) => candidate.suite_id === suiteId,
+  );
+  if (!entry) {
+    throw new Error(`Expected workflow matrix entry ${suiteId} in ${jobName}`);
+  }
+  return entry;
+}
+
 function expectTextToIncludeAll(text: string | undefined, snippets: string[]): void {
   if (text === undefined) {
     throw new Error("Expected text to be defined before checking snippets");
@@ -112,6 +136,30 @@ function expectTextToIncludeAll(text: string | undefined, snippets: string[]): v
   for (const snippet of snippets) {
     expect(text).toContain(snippet);
   }
+}
+
+function runPackageAcceptanceSummary(params: {
+  advisory?: boolean;
+  telegramEnabled: boolean;
+  telegramResult: string;
+}) {
+  const summary = workflowJob(PACKAGE_ACCEPTANCE_WORKFLOW, "summary");
+  const script = workflowStep(summary, "Verify package acceptance results").run;
+  if (!script) {
+    throw new Error("Expected package acceptance summary script");
+  }
+  return spawnSync("bash", ["-c", script], {
+    encoding: "utf8",
+    env: {
+      ADVISORY: String(params.advisory ?? false),
+      DOCKER_RESULT: "success",
+      PACKAGE_INTEGRITY_RESULT: "success",
+      PACKAGE_TELEGRAM_RESULT: params.telegramResult,
+      PATH: process.env.PATH,
+      RESOLVE_RESULT: "success",
+      TELEGRAM_ENABLED: String(params.telegramEnabled),
+    },
+  });
 }
 
 describe("package acceptance workflow", () => {
@@ -668,7 +716,7 @@ describe("package acceptance workflow", () => {
 
     const workflow = readFileSync(FULL_RELEASE_VALIDATION_WORKFLOW, "utf8");
     const retryCalls = workflow.split("\n").filter((line) => line.includes("gh_with_retry "));
-    expect(retryCalls).toHaveLength(28);
+    expect(retryCalls).toHaveLength(30);
     for (const call of retryCalls) {
       expect(call).toMatch(/gh_with_retry (api|run view)/u);
     }
@@ -1032,8 +1080,6 @@ describe("package artifact reuse", () => {
     expect(workflow).toContain("suite_group: native-live-extensions-media-video");
     expect(workflow).toContain("OPENCLAW_LIVE_VIDEO_GENERATION_PROVIDERS=google,minimax");
     expect(workflow).toContain("OPENCLAW_LIVE_VIDEO_GENERATION_PROVIDERS=openai,openrouter,xai");
-    expect(workflow).toContain("suite_group: native-live-src-gateway-profiles-opencode-go");
-    expect(workflow).toContain("opencode-go/mimo-v2-omni");
     expect(workflow).toContain(
       "inputs.live_suite_filter == 'native-live-src-gateway-profiles-anthropic'",
     );
@@ -1053,6 +1099,47 @@ describe("package artifact reuse", () => {
     expect(
       workflow.match(/moonshot\) require_any Moonshot MOONSHOT_API_KEY KIMI_API_KEY ;;/gu),
     ).toHaveLength(2);
+  });
+
+  it("pins DeepSeek live profiles to both current V4 model refs", () => {
+    const deepSeek = workflowMatrixEntry(
+      LIVE_E2E_WORKFLOW,
+      "validate_live_provider_suites",
+      "native-live-src-gateway-profiles-deepseek",
+    );
+    const openCodeGo = workflowMatrixEntry(
+      LIVE_E2E_WORKFLOW,
+      "validate_live_provider_suites",
+      "native-live-src-gateway-profiles-opencode-go-deepseek-glm",
+    );
+
+    expect(deepSeek).toMatchObject({
+      advisory: true,
+      command:
+        "OPENCLAW_LIVE_GATEWAY_PROVIDERS=deepseek OPENCLAW_LIVE_GATEWAY_MODELS=deepseek/deepseek-v4-flash,deepseek/deepseek-v4-pro node .release-harness/scripts/test-live-shard.mjs native-live-src-gateway-profiles",
+      profiles: "full",
+    });
+    expect(openCodeGo.command).toContain(
+      "OPENCLAW_LIVE_GATEWAY_MODELS=opencode-go/deepseek-v4-flash,opencode-go/deepseek-v4-pro",
+    );
+  });
+
+  it("pins OpenCode Go MiMo live profiles to both current V2.5 model refs", () => {
+    const mimo = workflowMatrixEntry(
+      LIVE_E2E_WORKFLOW,
+      "validate_live_provider_suites",
+      "native-live-src-gateway-profiles-opencode-go-mimo",
+    );
+
+    expect(mimo).toMatchObject({
+      advisory: true,
+      command:
+        "OPENCLAW_LIVE_GATEWAY_PROVIDERS=opencode-go OPENCLAW_LIVE_GATEWAY_MODELS=opencode-go/mimo-v2.5,opencode-go/mimo-v2.5-pro node .release-harness/scripts/test-live-shard.mjs native-live-src-gateway-profiles",
+      profiles: "full",
+      suite_group: "native-live-src-gateway-profiles-opencode-go",
+    });
+    expect(mimo.command).not.toContain("opencode-go/mimo-v2-omni");
+    expect(mimo.command).not.toContain("opencode-go/mimo-v2-pro");
   });
 
   it("runs Docker live harnesses from trusted helper scripts", () => {
@@ -1600,22 +1687,38 @@ describe("package artifact reuse", () => {
 
   it("requires QA live evidence artifacts when lanes run", () => {
     const cases = [
-      ["run_mock_parity", "Upload parity artifacts"],
-      ["run_live_runtime_token_efficiency", "Upload live runtime token-efficiency artifacts"],
-      ["run_live_matrix", "Upload Matrix QA artifacts"],
-      ["run_live_matrix_sharded", "Upload Matrix QA shard artifacts"],
-      ["run_live_telegram", "Upload Telegram QA artifacts"],
-      ["run_live_discord", "Upload Discord QA artifacts"],
-      ["run_live_whatsapp", "Upload WhatsApp QA artifacts"],
-      ["run_live_slack", "Upload Slack QA artifacts"],
+      ["run_mock_parity", "Upload parity artifacts", "always()"],
+      [
+        "run_live_runtime_token_efficiency",
+        "Upload live runtime token-efficiency artifacts",
+        "always() && steps.run_lane.outputs.output_dir != ''",
+      ],
+      ["run_live_matrix", "Upload Matrix QA artifacts", "always()"],
+      ["run_live_matrix_sharded", "Upload Matrix QA shard artifacts", "always()"],
+      ["run_live_telegram", "Upload Telegram QA artifacts", "always()"],
+      ["run_live_discord", "Upload Discord QA artifacts", "always()"],
+      ["run_live_whatsapp", "Upload WhatsApp QA artifacts", "always()"],
+      ["run_live_slack", "Upload Slack QA artifacts", "always()"],
     ];
 
-    for (const [jobName, stepName] of cases) {
+    for (const [jobName, stepName, uploadCondition] of cases) {
       const uploadStep = workflowStep(workflowJob(QA_LIVE_TRANSPORTS_WORKFLOW, jobName), stepName);
 
-      expect(uploadStep.if, jobName).toBe("always()");
+      expect(uploadStep.if, jobName).toBe(uploadCondition);
       expect(uploadStep.with?.["if-no-files-found"], jobName).toBe("error");
     }
+  });
+
+  it("preserves the primary runtime token-efficiency failure", () => {
+    const job = workflowJob(QA_LIVE_TRANSPORTS_WORKFLOW, "run_live_runtime_token_efficiency");
+    const runStep = workflowStep(job, "Run live runtime parity lane");
+    const reportStep = workflowStep(job, "Generate live runtime token-efficiency report");
+
+    expect(runStep.run).toContain('mkdir -p "${output_dir}"');
+    expect(runStep.run).toContain(
+      "printf 'Runtime token-efficiency lane started.\\n' > \"${output_dir}/runtime-lane-started.txt\"",
+    );
+    expect(reportStep.if).toBe("steps.run_lane.outcome == 'success'");
   });
 
   it("requires release-check QA evidence artifacts when lanes run", () => {
@@ -1745,6 +1848,22 @@ describe("package artifact reuse", () => {
     }
   });
 
+  it("isolates Open WebUI release coverage on a lean large-disk runner", () => {
+    const job = workflowJob(LIVE_E2E_WORKFLOW, "validate_docker_openwebui");
+    const setupNode = workflowStep(job, "Setup Node environment");
+
+    expect(job.if).toBe(
+      "inputs.include_openwebui && inputs.docker_lanes == '' && (inputs.release_test_profile == 'stable' || inputs.release_test_profile == 'full')",
+    );
+    expect(job["runs-on"]).toBe("blacksmith-32vcpu-ubuntu-2404");
+    expect(job.env?.OPENCLAW_DOCKER_ALL_RELEASE_PROFILE).toBe("${{ inputs.release_test_profile }}");
+    expect(setupNode.with).toMatchObject({
+      "install-bun": "false",
+      "install-deps": "false",
+      "use-actions-cache": "false",
+    });
+  });
+
   it("names package acceptance Telegram as artifact-backed package validation", () => {
     const workflow = readFileSync(PACKAGE_ACCEPTANCE_WORKFLOW, "utf8");
 
@@ -1755,6 +1874,42 @@ describe("package artifact reuse", () => {
     expect(workflow).toContain("PACKAGE_TELEGRAM_RESULT:");
     expect(workflow).toContain("package_telegram=${PACKAGE_TELEGRAM_RESULT}");
     expect(workflow).not.toContain("npm_telegram:");
+  });
+
+  it.each([
+    { telegramEnabled: true, telegramResult: "success" },
+    { telegramEnabled: false, telegramResult: "skipped" },
+  ])(
+    "accepts Telegram result $telegramResult when enabled=$telegramEnabled",
+    ({ telegramEnabled, telegramResult }) => {
+      const result = runPackageAcceptanceSummary({ telegramEnabled, telegramResult });
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+    },
+  );
+
+  it("rejects a skipped Telegram lane when package acceptance enabled it", () => {
+    const result = runPackageAcceptanceSummary({
+      telegramEnabled: true,
+      telegramResult: "skipped",
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("::error::package_telegram ended with skipped");
+  });
+
+  it("preserves advisory handling for an unexpectedly skipped Telegram lane", () => {
+    const result = runPackageAcceptanceSummary({
+      advisory: true,
+      telegramEnabled: true,
+      telegramResult: "skipped",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(
+      "::warning::package_telegram ended with skipped; package acceptance is advisory for this caller.",
+    );
   });
 
   it("gives release build steps enough Node heap", () => {
@@ -1815,7 +1970,7 @@ describe("package artifact reuse", () => {
       'args+=(-f cross_os_suite_filter="$CROSS_OS_SUITE_FILTER")',
       'case "$RERUN_GROUP" in',
       "release-checks|install-smoke|cross-os|live-e2e|package|qa|qa-parity|qa-live)",
-      "cancel-in-progress: ${{ (inputs.ref == 'main' && inputs.rerun_group == 'all') || startsWith(inputs.ref, 'tideclaw/alpha/') }}",
+      "cancel-in-progress: ${{ (inputs.ref == 'main' && inputs.rerun_group == 'all') || startsWith(inputs.ref, 'tideclaw/alpha/') || startsWith(inputs.ref, 'release/') }}",
       "Verify release checks accepted Tideclaw alpha advisory lanes",
       "release_checks_advisory_only",
       "release_check_blocking_job",
@@ -2070,9 +2225,9 @@ describe("package artifact reuse", () => {
     expect(fullReleaseWorkflow).toContain('OPENCLAW_EXTENSIONS="diagnostics-otel,codex"');
     expect(fullReleaseWorkflow).not.toContain("/app/src/agents/templates/HEARTBEAT.md");
     expect(fullReleaseWorkflow).toContain("inputs.rerun_group == 'all'");
-    expect(fullReleaseWorkflow).toContain(
-      "needs.docker_runtime_assets_preflight.result == 'success'",
-    );
+    // The preflight no longer gates lane dispatch; the umbrella verifier
+    // enforces its result instead.
+    expect(fullReleaseWorkflow).toContain('"$DOCKER_RUNTIME_ASSETS_PREFLIGHT_RESULT" != "success"');
     expect(npmWorkflow).toContain("full_release_validation_run_id");
     expect(npmWorkflow).toContain("release_publish_run_id");
     expect(npmWorkflow).toContain("Real publish requires full_release_validation_run_id");
@@ -2088,10 +2243,30 @@ describe("package artifact reuse", () => {
     expect(npmTelegramWorkflow).toContain("preflight-manifest.json");
     expect(npmTelegramWorkflow).toContain("OPENCLAW_NPM_TELEGRAM_PACKAGE_DIR");
     expect(npmTelegramWorkflow).toContain("package artifact digest mismatch");
-    expect(workflow).toContain("Checkout release SHA");
+    const publishSteps = workflowJob(RELEASE_PUBLISH_WORKFLOW, "publish").steps ?? [];
+    const setupIndex = publishSteps.findIndex((step) => step.name === "Setup Node environment");
+    const notesIndex = publishSteps.findIndex(
+      (step) => step.name === "Prepare GitHub release notes",
+    );
+    const androidApprovalIndex = publishSteps.findIndex(
+      (step) => step.name === "Write Android release approval",
+    );
+    const dispatchIndex = publishSteps.findIndex(
+      (step) => step.name === "Dispatch publish workflows",
+    );
+    expect(setupIndex).toBeGreaterThan(-1);
+    expect(notesIndex).toBeGreaterThan(setupIndex);
+    expect(androidApprovalIndex).toBeGreaterThan(notesIndex);
+    expect(dispatchIndex).toBeGreaterThan(notesIndex);
+    expect(publishSteps[notesIndex]?.if).toBe("${{ inputs.publish_openclaw_npm }}");
+    expect(publishSteps[notesIndex]?.run).toContain("scripts/render-github-release-notes.mjs");
     expect(workflow).toContain('git show "${TARGET_SHA}:CHANGELOG.md" > "${changelog_file}"');
-    expect(workflow).toContain('$0 == "## Unreleased" { in_section = 1; next }');
-    expect(workflow).toContain("Unreleased prerelease fallback");
+    expect(workflow).not.toContain('awk -v version="${notes_version}"');
+    expect(workflow).not.toContain("scripts/prepare-github-release-notes.mjs");
+    expect(workflow).toContain("render_github_release_notes()");
+    expect(workflow).toContain("verify_release_tag_target()");
+    expect(workflow).toContain("canonical_release_body_matches()");
+    expect(workflow).toContain('--notes-file "${prepared_release_notes_file}"');
     expect(workflow).not.toContain("gh api --repo");
     expect(workflow).not.toContain("timeout-minutes: 360");
   });
@@ -2173,7 +2348,7 @@ describe("package artifact reuse", () => {
       "\n            create_or_update_github_release\n",
     );
     const promoteWindowsCall = releaseWorkflow.lastIndexOf(
-      "\n            if ! promote_windows_release_assets; then\n",
+      "\n              if promote_windows_release_assets; then\n",
     );
     const publishReleaseCall = releaseWorkflow.lastIndexOf(
       "\n              publish_github_release\n",
@@ -2280,6 +2455,12 @@ describe("package artifact reuse", () => {
     expect(androidWorkflow).toContain('--source-digest "${FALLBACK_ANDROID_BASE_SHA}"');
     expect(androidWorkflow).toContain("steps.release_source.outputs.fallback_base_tag == ''");
     expect(androidWorkflow).toContain(
+      "OPENCLAW_BUILD_TIMESTAMP: ${{ steps.release_approval.outputs.build_timestamp }}",
+    );
+    expect(androidWorkflow).toContain("GIT_COMMIT: ${{ inputs.release_target_sha }}");
+    expect(androidWorkflow).toContain("--json tagName,isDraft,isPrerelease,createdAt,assets,url");
+    expect(androidWorkflow).toContain("release_created_at=");
+    expect(androidWorkflow).toContain(
       "Reusing verified Android APK from ${FALLBACK_ANDROID_BASE_TAG}",
     );
     expect(androidWorkflow).toContain("Existing Android release asset ${asset_name} differs");
@@ -2303,7 +2484,7 @@ describe("package artifact reuse", () => {
       "\n            create_or_update_github_release\n",
     );
     const promoteAndroidCall = releaseWorkflow.lastIndexOf(
-      "\n            if ! promote_android_release_asset; then\n",
+      "\n              if promote_android_release_asset; then\n",
     );
     const publishReleaseCall = releaseWorkflow.lastIndexOf(
       "\n              publish_github_release\n",
@@ -2480,9 +2661,12 @@ describe("package artifact reuse", () => {
     expect(clawHubMetadataIndex).toBeGreaterThan(clawHubSetupIndex);
     expect(releaseWorkflow).toContain("Plugin npm run ID");
     expect(releaseWorkflow).toContain("Plugin ClawHub run ID");
-    expect(releaseWorkflow).toContain(
+    expect(releaseWorkflow).not.toContain(
       "did not return an Actions run URL; refusing to guess from recent workflow_dispatch runs",
     );
+    expect(releaseWorkflow).not.toContain("return_run_details: true");
+    expect(releaseWorkflow).toContain("'.workflow_run_id'");
+    expect(releaseWorkflow).toContain("'.html_url'");
     expect(releaseWorkflow).not.toContain("BEFORE_IDS=");
     expect(releaseWorkflow).not.toContain("before_json");
     expect(releaseWorkflow).toContain("plugin-clawhub-new.yml");
@@ -2512,13 +2696,30 @@ describe("package artifact reuse", () => {
     expect(releaseWorkflow).toContain("npm_telegram_run_id");
     expect(releaseWorkflow).toContain('release_publish_run_id="${GITHUB_RUN_ID}"');
     expect(releaseWorkflow).toContain("append_release_proof_to_github_release");
+    expect(releaseWorkflow).toContain(
+      'render_github_release_notes "${notes_file}" "${proof_file}" "${metadata_file}"',
+    );
+    expect(releaseWorkflow).toContain(".verificationIncluded == true");
+    expect(releaseWorkflow).not.toContain("Release verification tail omitted");
     expect(releaseWorkflow).toContain("guard_existing_public_release");
     expect(releaseWorkflow).toContain(
       "already has a public GitHub release page without complete postpublish evidence",
     );
+    expect(releaseWorkflow).toContain("resolve_openclaw_npm_publish_state");
+    expect(releaseWorkflow).toContain(
+      "already published on npm with this tag's preflight tarball; skipping the core npm dispatch and resuming the remaining publish stages",
+    );
+    expect(releaseWorkflow).toContain("Cut a correction tag instead of resuming this publish.");
+    expect(
+      releaseWorkflow.match(/assets already promoted and verified; skipping dispatch/g),
+    ).toHaveLength(2);
     expect(releaseWorkflow).toContain("registry tarball");
     expect(releaseWorkflow).toContain("openclawNpmTarball");
-    expect(releaseWorkflow).not.toContain('npm view "openclaw@${release_version}" dist.tarball');
+    // The release proof must cite the verified evidence tarball; the only
+    // direct registry tarball query is the resume identity check.
+    expect(
+      releaseWorkflow.match(/npm view "openclaw@\$\{release_version\}" dist\.tarball/g),
+    ).toHaveLength(1);
     expect(releaseWorkflow).toContain("release SHA");
     expect(clawHubReleasePlanScript).toContain("not awaited by this proof");
     expect(releaseWorkflow).toContain("wait_for_job_success");
@@ -2644,11 +2845,14 @@ describe("package artifact reuse", () => {
     expect(releaseWorkflow).toContain(
       "has failed jobs before the workflow completed: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${run_id}",
     );
-    expect(releaseWorkflow.lastIndexOf("verify_published_release")).toBeLessThan(
-      releaseWorkflow.lastIndexOf("create_or_update_github_release"),
-    );
     expect(releaseWorkflow.lastIndexOf("create_or_update_github_release")).toBeLessThan(
+      releaseWorkflow.lastIndexOf("verify_published_release"),
+    );
+    expect(releaseWorkflow.lastIndexOf("verify_published_release")).toBeLessThan(
       releaseWorkflow.lastIndexOf("append_release_proof_to_github_release"),
+    );
+    expect(releaseWorkflow.lastIndexOf("append_release_proof_to_github_release")).toBeLessThan(
+      releaseWorkflow.lastIndexOf("publish_github_release"),
     );
     expect(releaseWorkflow).toContain("finished with ${conclusion} in ${duration_label}");
   });
@@ -2696,5 +2900,43 @@ describe("package artifact reuse", () => {
       "timeout --foreground --kill-after=30s 8m pnpm test:live:cache",
     );
     expect(readFileSync(LIVE_E2E_WORKFLOW, "utf8")).toContain("live-cache attempt ${attempt}/2");
+  });
+
+  it("keeps every tracked repository skill visible to Git-aware syncs", () => {
+    const gitignore = readFileSync(".gitignore", "utf8");
+    const skillFiles = execFileSync("git", ["ls-files", ".agents/skills/*/SKILL.md"], {
+      encoding: "utf8",
+    })
+      .trim()
+      .split("\n");
+    const skillDirs = skillFiles.map((path) => path.split("/").slice(0, 3).join("/"));
+
+    for (const skillDir of skillDirs) {
+      expect(gitignore).toContain(`!${skillDir}/`);
+      expect(gitignore).toContain(`!${skillDir}/**`);
+    }
+    const ignored = spawnSync("git", ["check-ignore", "--no-index", "--stdin"], {
+      encoding: "utf8",
+      input: `${skillFiles.join("\n")}\n`,
+    });
+    expect(ignored.status).toBe(1);
+    expect(ignored.stdout).toBe("");
+    expect(ignored.stderr).toBe("");
+  });
+
+  it("keeps tracked sync metadata and QA Mantis sources visible to remote full syncs", () => {
+    for (const path of [
+      ".gitignore",
+      "apps/android/.gitignore",
+      "extensions/qa-lab/src/mantis/cli.ts",
+    ]) {
+      const result = spawnSync("git", ["check-ignore", "--no-index", path], {
+        encoding: "utf8",
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toBe("");
+    }
   });
 });

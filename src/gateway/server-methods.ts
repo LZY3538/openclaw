@@ -379,6 +379,7 @@ export const coreGatewayHandlers: GatewayRequestHandlers = {
       "device.pair.approve",
       "device.pair.reject",
       "device.pair.remove",
+      "device.pair.rename",
       "device.token.rotate",
       "device.token.revoke",
     ],
@@ -611,12 +612,10 @@ export const coreGatewayHandlers: GatewayRequestHandlers = {
   }),
   ...createLazyCoreHandlers({
     methods: [
-      "node.pair.request",
       "node.pair.list",
       "node.pair.approve",
       "node.pair.reject",
       "node.pair.remove",
-      "node.pair.verify",
       "node.rename",
       "node.list",
       "node.describe",
