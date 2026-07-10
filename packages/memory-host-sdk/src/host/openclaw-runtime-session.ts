@@ -22,6 +22,7 @@ export {
   resolveStorePath,
   resolveSessionAgentId,
   resolveSessionTranscriptsDirForAgent,
+  stripHeartbeatToken,
   stripInboundMetadata,
   stripInternalRuntimeContext,
   type SessionEntry,
