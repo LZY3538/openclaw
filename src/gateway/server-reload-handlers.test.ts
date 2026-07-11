@@ -2281,7 +2281,6 @@ describe("gateway Gmail hot reload handlers", () => {
   });
 
   it("retries managed hot reload when secrets change before publication", async () => {
-    vi.useFakeTimers();
     const writeListenerRef: { current: ((event: ConfigWriteNotification) => void) | null } = {
       current: null,
     };
@@ -2428,7 +2427,6 @@ describe("gateway Gmail hot reload handlers", () => {
       sourceFingerprint: "source-hot-reload-next",
       writtenAtMs: Date.now(),
     });
-    await vi.runAllTimersAsync();
     await promotionComplete;
 
     try {
