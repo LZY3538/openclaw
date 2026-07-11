@@ -615,7 +615,7 @@ export async function startGatewayServer(port: number, opts?: GatewayServerOptio
     hotReloadRecovery: opts?.hotReloadRecovery ?? requestGatewayRestartWithSignalAdmission,
   };
   if (
-    resolvedOpts?.controlUiEnabled === true &&
+    resolvedOpts.controlUiEnabled &&
     process.env.OPENCLAW_TEST_MINIMAL_GATEWAY === "1" &&
     tempControlUiRoot &&
     typeof (testState.gatewayControlUi as { root?: unknown } | undefined)?.root !== "string"
