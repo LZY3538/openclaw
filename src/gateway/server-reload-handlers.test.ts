@@ -3150,6 +3150,72 @@ describe("gateway Gmail hot reload handlers", () => {
     }
   });
 
+  it("preserves restart debt while a deferred emission is still preparing", async () => {
+    vi.useFakeTimers();
+    const harness = createManagedRestartSequenceHarness();
+    let releaseSessionMarking = () => {};
+    let recordSessionMarkingStarted: (() => void) | undefined;
+    const sessionMarkingStarted = new Promise<void>((resolve) => {
+      recordSessionMarkingStarted = resolve;
+    });
+    const sessionMarkingGate = new Promise<void>((resolve) => {
+      releaseSessionMarking = resolve;
+    });
+    hoisted.markRestartAbortedMainSessions.mockImplementationOnce(async () => {
+      recordSessionMarkingStarted?.();
+      await sessionMarkingGate;
+      return { marked: 1, skipped: 0 };
+    });
+    hoisted.activeEmbeddedRunSessionKeys.push("agent:main:restart-pre-emit");
+    hoisted.activeTaskBlockers.push({
+      taskId: "restart-pre-emit-blocker",
+      status: "running",
+      runtime: "subagent",
+    });
+
+    try {
+      const deferredPromotion = harness.nextPromotion();
+      harness.writeConfig(harness.deferredConfig, "deferred-a", 1);
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(deferredPromotion).resolves.toBe("deferred-a");
+
+      hoisted.activeTaskBlockers.length = 0;
+      await vi.advanceTimersByTimeAsync(500);
+      await sessionMarkingStarted;
+
+      const replacementError = harness.nextReloadError();
+      harness.writeConfig(harness.invalidConfig, "invalid-b", 2);
+      await vi.advanceTimersByTimeAsync(0);
+      await replacementError;
+      expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
+
+      releaseSessionMarking();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
+
+      const revertPromotion = harness.nextPromotion();
+      harness.writeConfig(harness.deferredConfig, "accepted-revert-a", 3);
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(revertPromotion).resolves.toBe("accepted-revert-a");
+
+      const deferredPlan = buildGatewayReloadPlan(
+        diffConfigPaths(harness.initialConfig, harness.deferredConfig),
+      );
+      expect(harness.activateRuntimeSecrets).toHaveBeenNthCalledWith(3, harness.deferredConfig, {
+        reason: "restart-check",
+        activate: false,
+      });
+      expect(harness.requestRecoveryRestart.mock.calls).toEqual([
+        [`config reload: ${deferredPlan.restartReasons.join(", ")}`],
+      ]);
+    } finally {
+      releaseSessionMarking();
+      hoisted.activeTaskBlockers.length = 0;
+      hoisted.activeEmbeddedRunSessionKeys.length = 0;
+      await harness.reloader.stop();
+    }
+  });
+
   it("revalidates paused restart secrets before rearming an exact config revert", async () => {
     vi.useFakeTimers();
     const harness = createManagedRestartSequenceHarness();

@@ -867,6 +867,9 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
   let restartDeferral: RestartDeferralHandle | null = null;
   let restartRequestGeneration = 0;
   let restartRequestTransaction: { state: GatewayRestartTransactionState } | null = null;
+  // onReady/onTimeout precede async restart preparation. Keep committed details
+  // debt-eligible until the emitter confirms this generation won.
+  let restartEmissionSettled = false;
   type RestartRequestDetails = {
     plan: GatewayReloadPlan;
     nextConfig: OpenClawConfig;
@@ -891,6 +894,7 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
     }
     restartRequestTransaction = null;
     restartRequestDetails = null;
+    restartEmissionSettled = false;
   };
 
   const stopRestartRetries = () => {
@@ -923,6 +927,9 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
         }
         restartPending = false;
         const emitResult = params.requestRecoveryRestart?.(retry.reason, retry.intent);
+        if (emitResult && emitResult.status !== "failed") {
+          restartEmissionSettled = true;
+        }
         if (!emitResult || emitResult.status === "failed") {
           scheduleRestartEmissionRetry(retry);
         }
@@ -968,7 +975,7 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
     // A newer restart candidate owns the disk config now. Cancel any older
     // emission before async preflight so it cannot restart into stale secrets.
     if (
-      restartPending &&
+      !restartEmissionSettled &&
       restartRequestTransaction?.state === "committed" &&
       restartRequestDetails
     ) {
@@ -1042,6 +1049,9 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
             }
             const resolvedReason = reason ?? restartReason;
             const emitResult = requestRecoveryRestart(resolvedReason, intent);
+            if (emitResult.status !== "failed") {
+              restartEmissionSettled = true;
+            }
             failedEmission =
               emitResult.status === "failed" ? { reason: resolvedReason, intent } : undefined;
             return emitResult;
@@ -1101,6 +1111,9 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
     // returns. Extend that fence across signal delivery until the run loop
     // atomically promotes it to one-way restart drain.
     const emitResult = requestRecoveryRestart(restartReason);
+    if (emitResult.status !== "failed") {
+      restartEmissionSettled = true;
+    }
     if (emitResult.status === "failed") {
       params.logReload.warn("gateway restart recovery emission failed");
       scheduleRestartEmissionRetry({
@@ -1125,6 +1138,7 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
     supersedeRestartRequest();
     const transaction = { state: "pending" as GatewayRestartTransactionState };
     restartRequestTransaction = transaction;
+    restartEmissionSettled = false;
     const explicitRestartPaths = plan.restartReasons.filter((path) =>
       plan.changedPaths.includes(path),
     );
