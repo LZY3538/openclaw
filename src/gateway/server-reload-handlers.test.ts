@@ -3566,7 +3566,15 @@ describe("deferred channel reload abort generation", () => {
     };
     const commitTerminalConfig = vi.fn();
     const promoteSnapshot = vi.fn(async () => true);
-    const logReload = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    let recordReloadError: ((message: string) => void) | undefined;
+    const reloadError = new Promise<string>((resolve) => {
+      recordReloadError = resolve;
+    });
+    const logReload = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn((message: string) => recordReloadError?.(message)),
+    };
     const reloader = startManagedGatewayConfigReloader({
       minimalTestGateway: false,
       initialConfig,
@@ -3650,11 +3658,12 @@ describe("deferred channel reload abort generation", () => {
       abortPendingChannelReloads();
       await vi.advanceTimersByTimeAsync(500);
 
+      const expectedError =
+        "config reload failed: GatewayHotReloadCancelledError: config hot reload cancelled by in-process restart";
+      expect(await reloadError).toBe(expectedError);
       expect(commitTerminalConfig).not.toHaveBeenCalled();
       expect(promoteSnapshot).not.toHaveBeenCalled();
-      expect(logReload.error).toHaveBeenCalledWith(
-        "config reload failed: GatewayHotReloadCancelledError: config hot reload cancelled by in-process restart",
-      );
+      expect(logReload.error).toHaveBeenCalledWith(expectedError);
     } finally {
       hoisted.activeTaskBlockers.length = 0;
       await reloader.stop();
