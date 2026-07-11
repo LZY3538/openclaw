@@ -2312,7 +2312,13 @@ describe("gateway Gmail hot reload handlers", () => {
     const logReload = {
       info: vi.fn(),
       warn: vi.fn(),
-      error: vi.fn(() => resolveRejectedReload?.()),
+      error: vi.fn((message: string) => {
+        if (message.startsWith("config reload failed:")) {
+          // Promise reactions run after runReload's synchronous finally block
+          // clears `running`, so the revert starts a new transaction directly.
+          resolveRejectedReload?.();
+        }
+      }),
     };
     const requestRecoveryRestart = vi
       .fn<NonNullable<ManagedReloaderParams["requestRecoveryRestart"]>>()
