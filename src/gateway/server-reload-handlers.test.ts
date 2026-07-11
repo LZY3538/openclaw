@@ -2277,7 +2277,7 @@ describe("gateway Gmail hot reload handlers", () => {
       reason: "reload",
       activate: true,
     });
-    expect(acceptTerminalConfig).toHaveBeenCalledWith(nextConfig, {
+    expect(acceptTerminalConfig).toHaveBeenCalledWith({
       retireRejectedRestart: false,
     });
     expect(heartbeatRunner.updateConfig).not.toHaveBeenCalled();

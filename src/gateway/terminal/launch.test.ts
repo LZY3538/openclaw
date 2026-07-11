@@ -283,6 +283,9 @@ describe("createTerminalLaunchPolicy", () => {
     );
     restartPolicy.prepareConfig(baseConfig, { restartPending: true });
     expect(restartPolicy.resolve().ok).toBe(false);
+    restartPolicy.acceptConfig({ retireRejectedRestart: false });
+    restartPolicy.commitConfig();
+    expect(restartPolicy.resolve().ok).toBe(true);
   });
 
   it("releases a rejected restart restriction after an accepted revert", () => {
@@ -302,7 +305,7 @@ describe("createTerminalLaunchPolicy", () => {
     policy.commitConfig();
     expect(policy.isEnabled()).toBe(false);
 
-    policy.acceptConfig(baseConfig, { retireRejectedRestart: true });
+    policy.acceptConfig({ retireRejectedRestart: true });
     policy.commitConfig();
     expect(policy.isEnabled()).toBe(true);
   });
@@ -325,13 +328,7 @@ describe("createTerminalLaunchPolicy", () => {
     policy.commitConfig();
     expect(policy.resolve().ok).toBe(false);
 
-    policy.acceptConfig(
-      {
-        gateway: { terminal: { enabled: true } },
-        agents: { defaults: { sandbox: { mode: "off" } } },
-      },
-      { retireRejectedRestart: true },
-    );
+    policy.acceptConfig({ retireRejectedRestart: true });
     policy.commitConfig();
     expect(policy.resolve().ok).toBe(true);
   });
@@ -352,12 +349,54 @@ describe("createTerminalLaunchPolicy", () => {
     );
     expect(policy.resolve().ok).toBe(false);
 
-    policy.acceptConfig(baseConfig, { retireRejectedRestart: false });
+    policy.acceptConfig({ retireRejectedRestart: false });
     policy.commitConfig();
     expect(policy.resolve().ok).toBe(true);
 
+    const skippedPolicy = createTerminalLaunchPolicy({
+      ...baseConfig,
+      agents: { defaults: { sandbox: { mode: "all" } } },
+    });
+    skippedPolicy.prepareConfig(baseConfig, { restartPending: false });
+    skippedPolicy.acceptConfig({ retireRejectedRestart: false });
+    skippedPolicy.commitConfig();
+    expect(skippedPolicy.resolve().ok).toBe(false);
+
+    const pendingPolicy = createTerminalLaunchPolicy(baseConfig);
+    pendingPolicy.prepareConfig(baseConfig, { restartPending: true });
+    pendingPolicy.prepareConfig(
+      {
+        ...baseConfig,
+        agents: { defaults: { sandbox: { mode: "all" } } },
+      },
+      { restartPending: false },
+    );
+    expect(pendingPolicy.resolve().ok).toBe(false);
+    pendingPolicy.acceptConfig({ retireRejectedRestart: false });
+    pendingPolicy.commitConfig();
+    expect(pendingPolicy.resolve().ok).toBe(true);
+
+    const appliedPendingPolicy = createTerminalLaunchPolicy(baseConfig);
+    appliedPendingPolicy.prepareConfig(baseConfig, { restartPending: true });
+    appliedPendingPolicy.prepareConfig(
+      {
+        ...baseConfig,
+        agents: { defaults: { sandbox: { mode: "all" } } },
+      },
+      { restartPending: false },
+    );
+    appliedPendingPolicy.commitConfig();
+    appliedPendingPolicy.acceptConfig({ retireRejectedRestart: false });
+    appliedPendingPolicy.commitConfig();
+    expect(appliedPendingPolicy.resolve().ok).toBe(false);
+    appliedPendingPolicy.prepareConfig(baseConfig, { restartPending: false });
+    appliedPendingPolicy.commitConfig();
+    appliedPendingPolicy.acceptConfig({ retireRejectedRestart: false });
+    appliedPendingPolicy.commitConfig();
+    expect(appliedPendingPolicy.resolve().ok).toBe(true);
+
     policy.prepareConfig({}, { restartPending: true });
-    policy.acceptConfig(baseConfig, { retireRejectedRestart: false });
+    policy.acceptConfig({ retireRejectedRestart: false });
     policy.commitConfig();
     expect(policy.isEnabled()).toBe(false);
   });
