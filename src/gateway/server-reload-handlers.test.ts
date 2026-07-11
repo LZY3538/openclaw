@@ -2301,6 +2301,19 @@ describe("gateway Gmail hot reload handlers", () => {
       current: null,
     };
     const terminalPolicy = createTerminalLaunchPolicy(initialConfig);
+    let resolveRejectedReload: (() => void) | undefined;
+    const rejectedReload = new Promise<void>((resolve) => {
+      resolveRejectedReload = resolve;
+    });
+    let resolveAcceptedRevert: (() => void) | undefined;
+    const acceptedRevert = new Promise<void>((resolve) => {
+      resolveAcceptedRevert = resolve;
+    });
+    const logReload = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(() => resolveRejectedReload?.()),
+    };
     const requestRecoveryRestart = vi
       .fn<NonNullable<ManagedReloaderParams["requestRecoveryRestart"]>>()
       .mockReturnValue({ status: "failed" });
@@ -2325,7 +2338,10 @@ describe("gateway Gmail hot reload handlers", () => {
         legacyIssues: [],
         hash: snapshotHash,
       })) as never,
-      promoteSnapshot: vi.fn(async () => true) as never,
+      promoteSnapshot: vi.fn(async () => {
+        resolveAcceptedRevert?.();
+        return true;
+      }) as never,
       subscribeToWrites: ((listener: (event: ConfigWriteNotification) => void) => {
         writeListenerRef.current = listener;
         return () => {
@@ -2359,7 +2375,7 @@ describe("gateway Gmail hot reload handlers", () => {
       logHooks: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       logChannels: { info: vi.fn(), error: vi.fn() },
       logCron: { error: vi.fn() },
-      logReload: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      logReload,
       channelManager: {} as never,
       activateRuntimeSecrets: vi.fn(async (config: OpenClawConfig) => ({
         sourceConfig: config,
@@ -2395,6 +2411,7 @@ describe("gateway Gmail hot reload handlers", () => {
         writtenAtMs: Date.now(),
       });
       await vi.advanceTimersByTimeAsync(1);
+      await rejectedReload;
       expect(terminalPolicy.isEnabled()).toBe(false);
 
       snapshotConfig = initialConfig;
@@ -2410,6 +2427,7 @@ describe("gateway Gmail hot reload handlers", () => {
         writtenAtMs: Date.now(),
       });
       await vi.advanceTimersByTimeAsync(1);
+      await acceptedRevert;
 
       expect(terminalPolicy.isEnabled()).toBe(true);
       expect(requestRecoveryRestart).toHaveBeenCalledOnce();
