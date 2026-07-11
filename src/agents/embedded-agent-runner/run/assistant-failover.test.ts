@@ -391,6 +391,69 @@ describe("handleAssistantFailover", () => {
       expect(advanceAuthProfile).not.toHaveBeenCalled();
     });
 
+    it("uses structured Retry-After metadata for same-model retry when the message omits the header", async () => {
+      const maybeRetrySameModelRateLimit = vi.fn(async () => true);
+      const maybeEscalateRateLimitProfileFallback = vi.fn();
+      const advanceAuthProfile = vi.fn(async () => true);
+
+      const outcome = await handleAssistantFailover(
+        makeParams({
+          initialDecision: { action: "rotate_profile", reason: "rate_limit" },
+          failoverReason: "rate_limit",
+          billingFailure: false,
+          rateLimitFailure: true,
+          lastAssistant: {
+            errorMessage: "Anthropic Messages request failed with HTTP 429",
+            retryAfterSeconds: 30,
+          } as Params["lastAssistant"],
+          maybeRetrySameModelRateLimit,
+          maybeEscalateRateLimitProfileFallback,
+          advanceAuthProfile,
+        }),
+      );
+
+      expect(outcome.action).toBe("retry");
+      if (outcome.action !== "retry") {
+        return;
+      }
+      expect(outcome.retryKind).toBe("same_model_rate_limit");
+      expect(maybeRetrySameModelRateLimit).toHaveBeenCalledTimes(1);
+      expect(maybeRetrySameModelRateLimit).toHaveBeenCalledWith({ retryAfterSeconds: 30 });
+      expect(maybeEscalateRateLimitProfileFallback).not.toHaveBeenCalled();
+      expect(advanceAuthProfile).not.toHaveBeenCalled();
+    });
+
+    it("does not spend same-model retry budget when structured Retry-After exceeds the short-window ceiling", async () => {
+      const maybeRetrySameModelRateLimit = vi.fn(async () => true);
+      const maybeEscalateRateLimitProfileFallback = vi.fn();
+      const advanceAuthProfile = vi.fn(async () => true);
+
+      const outcome = await handleAssistantFailover(
+        makeParams({
+          initialDecision: { action: "rotate_profile", reason: "rate_limit" },
+          failoverReason: "rate_limit",
+          billingFailure: false,
+          rateLimitFailure: true,
+          lastAssistant: {
+            errorMessage: "Anthropic Messages request failed with HTTP 429",
+            retryAfterSeconds: 120,
+          } as Params["lastAssistant"],
+          maybeRetrySameModelRateLimit,
+          maybeEscalateRateLimitProfileFallback,
+          advanceAuthProfile,
+        }),
+      );
+
+      expect(outcome.action).toBe("retry");
+      if (outcome.action !== "retry") {
+        return;
+      }
+      expect(outcome.retryKind).toBeUndefined();
+      expect(maybeRetrySameModelRateLimit).not.toHaveBeenCalled();
+      expect(maybeEscalateRateLimitProfileFallback).toHaveBeenCalledTimes(1);
+      expect(advanceAuthProfile).toHaveBeenCalledTimes(1);
+    });
+
     it("allows RESOURCE_EXHAUSTED messages with short-window 429 hints", async () => {
       const maybeRetrySameModelRateLimit = vi.fn(async () => true);
       const maybeEscalateRateLimitProfileFallback = vi.fn();

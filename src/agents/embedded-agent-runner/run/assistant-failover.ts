@@ -38,6 +38,7 @@ type AssistantFailoverOutcome =
 type ShortWindowRateLimitRetry = {
   retryAfterSeconds?: number;
 };
+type RateLimitRetrySignal = Pick<AssistantMessage, "errorMessage" | "retryAfterSeconds">;
 
 const LONG_WINDOW_RATE_LIMIT_RE =
   /\b(?:daily|weekly|monthly|tokens per day|requests per day|usage limit|subscription|insufficient[_ -]?quota|current quota|quota[_ -]?exceeded|quota exceeded)\b/i;
@@ -82,10 +83,28 @@ function parseRetryAfterSeconds(message: string): number | null {
   return Math.max(0, (retryAtMs - Date.now()) / 1000);
 }
 
+function readStructuredRetryAfterSeconds(message: RateLimitRetrySignal | undefined): number | null {
+  const retryAfterSeconds = message?.retryAfterSeconds;
+  return typeof retryAfterSeconds === "number" && !Number.isNaN(retryAfterSeconds)
+    ? retryAfterSeconds
+    : null;
+}
+
 function resolveShortWindowRateLimitRetry(
-  message: string | undefined,
+  message: RateLimitRetrySignal | undefined,
 ): ShortWindowRateLimitRetry | null {
-  const raw = message?.trim();
+  const structuredRetryAfterSeconds = readStructuredRetryAfterSeconds(message);
+  if (
+    structuredRetryAfterSeconds !== null &&
+    structuredRetryAfterSeconds > MAX_SHORT_WINDOW_RETRY_AFTER_SECONDS
+  ) {
+    return null;
+  }
+  if (structuredRetryAfterSeconds !== null && structuredRetryAfterSeconds >= 0) {
+    return { retryAfterSeconds: structuredRetryAfterSeconds };
+  }
+
+  const raw = message?.errorMessage?.trim();
   if (!raw) {
     return null;
   }
@@ -114,8 +133,16 @@ function resolveShortWindowRateLimitRetry(
   return retryAfterSeconds !== null ? { retryAfterSeconds } : {};
 }
 
-export function isShortWindowRateLimitMessage(message: string | undefined): boolean {
-  return resolveShortWindowRateLimitRetry(message) !== null;
+function normalizeRateLimitRetrySignal(
+  message: string | RateLimitRetrySignal | undefined,
+): RateLimitRetrySignal | undefined {
+  return typeof message === "string" || message === undefined ? { errorMessage: message } : message;
+}
+
+export function isShortWindowRateLimitMessage(
+  message: string | RateLimitRetrySignal | undefined,
+): boolean {
+  return resolveShortWindowRateLimitRetry(normalizeRateLimitRetrySignal(message)) !== null;
 }
 
 /**
@@ -255,7 +282,7 @@ export async function handleAssistantFailover(params: {
       // Minute-scale RPM windows can clear without spending a profile rotation
       // or model fallback. Keep the retry bounded; once exhausted, continue
       // through the existing rate-limit escalation path.
-      const shortWindowRetry = resolveShortWindowRateLimitRetry(params.lastAssistant?.errorMessage);
+      const shortWindowRetry = resolveShortWindowRateLimitRetry(params.lastAssistant);
       if (
         params.allowSameModelRateLimitRetry &&
         shortWindowRetry &&

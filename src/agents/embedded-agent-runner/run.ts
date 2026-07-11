@@ -3531,7 +3531,7 @@ async function runEmbeddedAgentInternal(
               providerStarted: assistantProviderStarted,
               transientRateLimit:
                 assistantProfileFailoverReason === "rate_limit" &&
-                isShortWindowRateLimitMessage(attemptAssistant?.errorMessage),
+                isShortWindowRateLimitMessage(attemptAssistant),
             },
           );
           const cloudCodeAssistFormatError = attempt.cloudCodeAssistFormatError;

@@ -320,7 +320,7 @@ export interface AssistantMessage {
   errorType?: string;
   errorBody?: string;
   httpStatus?: number; // HTTP status from a transport error response (e.g. 429), when available
-  retryAfterSeconds?: number; // Server-specified cooldown (e.g. Retry-After header) for auto-retry backoff
+  retryAfterSeconds?: number; // Server-specified cooldown (e.g. Retry-After header) for retry/failover decisions
   timestamp: number; // Unix timestamp in milliseconds
 }
 

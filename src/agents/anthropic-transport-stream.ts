@@ -811,10 +811,10 @@ async function* parseAnthropicSseBody(
 
 /**
  * Build the error thrown for a non-OK Anthropic Messages response, preserving
- * the HTTP status and any server-specified `Retry-After` cooldown so the retry
- * path (AgentSession.prepareRetry) can honor it instead of always falling back
- * to fixed exponential backoff. The bespoke fetch client below is not a
- * Stainless-style SDK, so this metadata would otherwise be discarded here.
+ * the HTTP status and any server-specified `Retry-After` cooldown so managed
+ * retry/failover paths can distinguish short-window rate limits from terminal
+ * quota failures. The bespoke fetch client below is not a Stainless-style SDK,
+ * so this metadata would otherwise be discarded here.
  */
 function createAnthropicMessagesHttpError(
   response: Response,
