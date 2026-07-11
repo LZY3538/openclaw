@@ -269,7 +269,10 @@ type ManagedGatewayConfigReloaderParams = Omit<
   clients: Iterable<SharedGatewayAuthClient>;
   reconcileTerminalSessions: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => void;
   commitTerminalConfig: () => void;
-  retireTerminalRestartConfig: (acceptedConfig: OpenClawConfig) => void;
+  acceptTerminalConfig: (
+    acceptedConfig: OpenClawConfig,
+    options: { retireRejectedRestart: boolean },
+  ) => void;
 };
 
 export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) {
@@ -1108,10 +1111,9 @@ export function startManagedGatewayConfigReloader(
     subscribeToWrites: params.subscribeToWrites,
     onConfigChange: (plan, nextConfig) => params.reconcileTerminalSessions(plan, nextConfig),
     onConfigAccepted: (nextConfig) => {
-      if (!retireRejectedRestartRequest()) {
-        return;
-      }
-      params.retireTerminalRestartConfig(nextConfig);
+      params.acceptTerminalConfig(nextConfig, {
+        retireRejectedRestart: retireRejectedRestartRequest(),
+      });
       params.commitTerminalConfig();
     },
     onConfigApplied: () => params.commitTerminalConfig(),

@@ -2189,6 +2189,7 @@ describe("gateway Gmail hot reload handlers", () => {
       webTools: {},
     }));
     const heartbeatRunner = { stop: vi.fn(), updateConfig: vi.fn() };
+    const acceptTerminalConfig = vi.fn();
     const reloader = startManagedGatewayConfigReloader({
       minimalTestGateway: false,
       initialConfig,
@@ -2252,7 +2253,7 @@ describe("gateway Gmail hot reload handlers", () => {
       clients: [],
       reconcileTerminalSessions: vi.fn(),
       commitTerminalConfig: vi.fn(),
-      retireTerminalRestartConfig: vi.fn(),
+      acceptTerminalConfig,
     });
     const registeredWriteListener = writeListenerRef.current;
     if (!registeredWriteListener) {
@@ -2275,6 +2276,9 @@ describe("gateway Gmail hot reload handlers", () => {
     expect(activateRuntimeSecrets).toHaveBeenCalledWith(nextConfig, {
       reason: "reload",
       activate: true,
+    });
+    expect(acceptTerminalConfig).toHaveBeenCalledWith(nextConfig, {
+      retireRejectedRestart: false,
     });
     expect(heartbeatRunner.updateConfig).not.toHaveBeenCalled();
     await reloader.stop();
@@ -2422,7 +2426,7 @@ describe("gateway Gmail hot reload handlers", () => {
       clients: [],
       reconcileTerminalSessions: vi.fn(),
       commitTerminalConfig,
-      retireTerminalRestartConfig: vi.fn(),
+      acceptTerminalConfig: vi.fn(),
     });
     const registeredWriteListener = writeListenerRef.current;
     if (!registeredWriteListener) {
@@ -2553,7 +2557,7 @@ describe("gateway Gmail hot reload handlers", () => {
       clients: [],
       reconcileTerminalSessions: vi.fn(),
       commitTerminalConfig: vi.fn(),
-      retireTerminalRestartConfig: vi.fn(),
+      acceptTerminalConfig: vi.fn(),
     });
     const registeredWriteListener = writeListenerRef.current;
     if (!registeredWriteListener) {
@@ -2666,7 +2670,7 @@ describe("gateway Gmail hot reload handlers", () => {
       clients: [],
       reconcileTerminalSessions: vi.fn(),
       commitTerminalConfig: vi.fn(),
-      retireTerminalRestartConfig: vi.fn(),
+      acceptTerminalConfig: vi.fn(),
     });
     const registeredWriteListener = writeListenerRef.current;
     if (!registeredWriteListener) {
@@ -2781,7 +2785,7 @@ describe("gateway Gmail hot reload handlers", () => {
       clients: [],
       reconcileTerminalSessions: vi.fn(),
       commitTerminalConfig: vi.fn(),
-      retireTerminalRestartConfig: vi.fn(),
+      acceptTerminalConfig: vi.fn(),
     });
     const registeredWriteListener = writeListenerRef.current;
     if (!registeredWriteListener) {
@@ -3618,7 +3622,7 @@ describe("deferred channel reload abort generation", () => {
       clients: [],
       reconcileTerminalSessions: vi.fn(),
       commitTerminalConfig,
-      retireTerminalRestartConfig: vi.fn(),
+      acceptTerminalConfig: vi.fn(),
     });
     const registeredWriteListener = writeListenerRef.current;
     if (!registeredWriteListener) {

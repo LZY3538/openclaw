@@ -36,7 +36,10 @@ type TerminalLaunchPolicy = {
   isEnabled: () => boolean;
   prepareConfig: (config: OpenClawConfig, options: { restartPending: boolean }) => void;
   commitConfig: () => void;
-  retireRestartConfig: (acceptedConfig: OpenClawConfig) => void;
+  acceptConfig: (
+    acceptedConfig: OpenClawConfig,
+    options: { retireRejectedRestart: boolean },
+  ) => void;
 };
 
 /** Picks the interactive shell: explicit config, then the host login shell. */
@@ -241,10 +244,14 @@ export function createTerminalLaunchPolicy(initialConfig: OpenClawConfig): Termi
       terminalDisabledUntilCommit = false;
       blockedAgentsUntilCommit.clear();
     },
-    retireRestartConfig: (acceptedConfig) => {
-      hasPendingRestart = false;
-      terminalDisabledUntilRestart = false;
-      blockedAgentsUntilRestart.clear();
+    acceptConfig: (acceptedConfig, options) => {
+      // Acceptance replaces any failed hot candidate. Restart restrictions have
+      // a separate lifecycle and survive unless their own transaction rejected.
+      if (options.retireRejectedRestart) {
+        hasPendingRestart = false;
+        terminalDisabledUntilRestart = false;
+        blockedAgentsUntilRestart.clear();
+      }
       preparedConfig = preserveTerminalConfig(acceptedConfig, activeConfig);
       terminalDisabledUntilCommit = false;
       blockedAgentsUntilCommit.clear();

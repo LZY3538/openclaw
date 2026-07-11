@@ -1922,7 +1922,7 @@ export async function startGatewayServer(
           );
         },
         commitTerminalConfig: terminalLaunchPolicy.commitConfig,
-        retireTerminalRestartConfig: terminalLaunchPolicy.retireRestartConfig,
+        acceptTerminalConfig: terminalLaunchPolicy.acceptConfig,
         channelManager,
         activateRuntimeSecrets,
         resolveSharedGatewaySessionGenerationForConfig,
