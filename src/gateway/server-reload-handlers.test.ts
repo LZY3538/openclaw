@@ -2337,7 +2337,14 @@ describe("gateway Gmail hot reload handlers", () => {
       { activatePreparedSnapshotIfCurrent },
     );
     const commitTerminalConfig = vi.fn();
-    const promoteSnapshot = vi.fn(async () => true);
+    let markPromotionComplete: (() => void) | undefined;
+    const promotionComplete = new Promise<void>((resolve) => {
+      markPromotionComplete = resolve;
+    });
+    const promoteSnapshot = vi.fn(async () => {
+      markPromotionComplete?.();
+      return true;
+    });
     const setState = vi.fn();
     const reloader = startManagedGatewayConfigReloader({
       minimalTestGateway: false,
@@ -2406,17 +2413,21 @@ describe("gateway Gmail hot reload handlers", () => {
       writtenAtMs: Date.now(),
     });
     await vi.runAllTimersAsync();
-    await reloader.stop();
+    await promotionComplete;
 
-    expect(activateRuntimeSecrets).toHaveBeenCalledTimes(2);
-    expect(activatePreparedSnapshotIfCurrent).toHaveBeenCalledOnce();
-    expect(activatePreparedSnapshotIfCurrent.mock.calls[0]?.[1]).toBeGreaterThan(
-      initialSnapshotRevision,
-    );
-    expect(setState).toHaveBeenCalledOnce();
-    expect(commitTerminalConfig).toHaveBeenCalledOnce();
-    expect(promoteSnapshot).toHaveBeenCalledOnce();
-    expect(getActiveSecretsRuntimeSnapshot()?.config).toEqual(nextConfig);
+    try {
+      expect(activateRuntimeSecrets).toHaveBeenCalledTimes(2);
+      expect(activatePreparedSnapshotIfCurrent).toHaveBeenCalledOnce();
+      expect(activatePreparedSnapshotIfCurrent.mock.calls[0]?.[1]).toBeGreaterThan(
+        initialSnapshotRevision,
+      );
+      expect(setState).toHaveBeenCalledOnce();
+      expect(commitTerminalConfig).toHaveBeenCalledOnce();
+      expect(promoteSnapshot).toHaveBeenCalledOnce();
+      expect(getActiveSecretsRuntimeSnapshot()?.config).toEqual(nextConfig);
+    } finally {
+      await reloader.stop();
+    }
   });
 
   it("aborts an in-flight managed Gmail restart when the reloader stops", async () => {
