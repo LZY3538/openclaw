@@ -21,20 +21,14 @@ import { measureDiagnosticsTimelineSpan } from "../infra/diagnostics-timeline.js
 import { isTruthyEnvValue } from "../infra/env.js";
 import type { PluginManifestRegistry } from "../plugins/manifest-registry.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
-import {
-  prepareSecretsRuntimeFastPathSnapshot,
-  resolveRefreshAgentDirs,
-} from "../secrets/runtime-fast-path.js";
+import { prepareSecretsRuntimeFastPathSnapshot } from "../secrets/runtime-fast-path.js";
 import {
   GATEWAY_AUTH_SURFACE_PATHS,
   evaluateGatewayAuthSurfaceStates,
 } from "../secrets/runtime-gateway-auth-surfaces.js";
 import {
   activateSecretsRuntimeSnapshotState,
-  getActiveSecretsRuntimeSnapshot,
   getActiveSecretsRuntimeSnapshotRevision,
-  getLiveSecretsRuntimeAuthStores,
-  setPreparedSecretsRuntimeSnapshotRefreshContext,
 } from "../secrets/runtime-state.js";
 import { createLazyPromise } from "../shared/lazy-runtime.js";
 import { resolveGatewayAuth } from "./auth.js";
@@ -62,6 +56,7 @@ type PreparedRuntimeSecretsSnapshot = Awaited<ReturnType<PrepareRuntimeSecretsSn
 type RuntimeSecretsActivationParams = {
   reason: "startup" | "reload" | "restart-check";
   activate: boolean;
+  onActivated?: () => void;
 };
 
 /** Gateway startup hook that prepares secrets and optionally activates the prepared snapshot. */
@@ -234,7 +229,7 @@ export function createRuntimeSecretsActivator(params: {
       activateRuntimeSecretsSnapshot(prepared);
       // Invoke publication at the activation edge so no microtask can replace
       // the candidate before its runtime commit begins.
-      options?.onActivated?.();
+      (options?.onActivated ?? activationParams.onActivated)?.();
       logGatewayAuthSurfaceDiagnostics(prepared, params.logSecrets);
     }
     for (const warning of prepared.warnings) {
@@ -295,78 +290,20 @@ export function createRuntimeSecretsActivator(params: {
           if (fastPath) {
             // The startup fast path avoids importing the full secrets runtime
             // until refresh/preflight needs dynamic provider or auth-store work.
-            const coercePreflightSnapshot = (
-              value: unknown,
-              sourceConfig: OpenClawConfig,
-            ): PreparedRuntimeSecretsSnapshot | null => {
-              if (!value || typeof value !== "object") {
-                return null;
-              }
-              const candidate = value as PreparedRuntimeSecretsSnapshot;
-              return isDeepStrictEqual(candidate.sourceConfig, sourceConfig) ? candidate : null;
-            };
-            const prepareFastPathRuntimeSnapshot = async (
-              secretsRuntime: typeof import("../secrets/runtime.js"),
-              sourceConfig: OpenClawConfig,
-              includeAuthStoreRefs: boolean | undefined,
-            ) =>
-              await secretsRuntime.prepareSecretsRuntimeSnapshot({
-                config: sourceConfig,
-                env: fastPath.refreshContext.env,
-                agentDirs: resolveRefreshAgentDirs(sourceConfig, fastPath.refreshContext),
-                includeAuthStoreRefs:
-                  includeAuthStoreRefs ?? fastPath.refreshContext.includeAuthStoreRefs,
-                loadablePluginOrigins: fastPath.refreshContext.loadablePluginOrigins,
-                ...(fastPath.refreshContext.manifestRegistry
-                  ? { manifestRegistry: fastPath.refreshContext.manifestRegistry }
-                  : {}),
-                ...(fastPath.usesAuthStoreFallback || !fastPath.refreshContext.loadAuthStore
-                  ? {}
-                  : { loadAuthStore: fastPath.refreshContext.loadAuthStore }),
-              });
             return await finishPreparedSnapshot(fastPath.snapshot, activationParams, {
               activateRuntimeSecretsSnapshot: (snapshot) =>
                 activateSecretsRuntimeSnapshotState({
                   snapshot,
                   refreshContext: fastPath.refreshContext,
                   refreshHandler: {
-                    preflight: async ({ sourceConfig, includeAuthStoreRefs }) => {
-                      const secretsRuntime = await loadSecretsRuntime();
-                      const activeSnapshot = getActiveSecretsRuntimeSnapshot();
-                      if (!activeSnapshot) {
-                        return false;
-                      }
-                      return await prepareFastPathRuntimeSnapshot(
-                        secretsRuntime,
-                        sourceConfig,
-                        includeAuthStoreRefs,
-                      );
-                    },
-                    refresh: async ({ sourceConfig, includeAuthStoreRefs, preflightResult }) => {
-                      const secretsRuntime = await loadSecretsRuntime();
-                      const activeSnapshot = getActiveSecretsRuntimeSnapshot();
-                      const oneShotSkipAuthStoreRefs =
-                        includeAuthStoreRefs === false &&
-                        fastPath.refreshContext.includeAuthStoreRefs;
-                      const refreshed =
-                        coercePreflightSnapshot(preflightResult, sourceConfig) ??
-                        (await prepareFastPathRuntimeSnapshot(
-                          secretsRuntime,
-                          sourceConfig,
-                          includeAuthStoreRefs,
-                        ));
-                      if (oneShotSkipAuthStoreRefs && activeSnapshot) {
-                        // Preserve live auth-store handles across a one-shot
-                        // preflight that intentionally skipped auth-store refs.
-                        refreshed.authStores = getLiveSecretsRuntimeAuthStores();
-                        setPreparedSecretsRuntimeSnapshotRefreshContext(
-                          refreshed,
-                          fastPath.refreshContext,
-                        );
-                      }
-                      secretsRuntime.activateSecretsRuntimeSnapshot(refreshed);
-                      return true;
-                    },
+                    preflight: async (refreshParams) =>
+                      await (
+                        await loadSecretsRuntime()
+                      ).preflightActiveSecretsRuntimeSnapshotRefresh(refreshParams),
+                    refresh: async (refreshParams) =>
+                      await (
+                        await loadSecretsRuntime()
+                      ).refreshActiveSecretsRuntimeSnapshotForConfig(refreshParams),
                   },
                 }),
             });

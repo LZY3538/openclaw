@@ -10,6 +10,7 @@ import {
 } from "../secrets/runtime-command-secrets.js";
 import {
   getActiveSecretsRuntimeSnapshot,
+  getActiveSecretsRuntimeSnapshotRevision,
   type PreparedSecretsRuntimeSnapshot,
 } from "../secrets/runtime-state.js";
 import { createLazyPromise } from "../shared/lazy-runtime.js";
@@ -42,11 +43,12 @@ type ReloadSecretsResult = {
   warningCount: number;
 };
 
-async function activateSecretsRuntimeSnapshot(
+async function activateSecretsRuntimeSnapshotIfCurrent(
   snapshot: PreparedSecretsRuntimeSnapshot,
-): Promise<void> {
+  expectedRevision: number,
+): Promise<boolean> {
   const runtime = await import("../secrets/runtime.js");
-  runtime.activateSecretsRuntimeSnapshot(snapshot);
+  return runtime.activateSecretsRuntimeSnapshotIfCurrent(snapshot, expectedRevision);
 }
 
 function createLazyHandler(
@@ -142,6 +144,7 @@ export function createGatewayAuxHandlers(params: {
                 params.sharedGatewaySessionGenerationState.required;
               let nextSharedGatewaySessionGeneration;
               let sharedGatewaySessionGenerationChanged = false;
+              let publishedSnapshotRevision: number | null = null;
               const stoppedChannels: ChannelKind[] = [];
               const restartedChannels = new Set<ChannelKind>();
               try {
@@ -150,6 +153,9 @@ export function createGatewayAuxHandlers(params: {
                   {
                     reason: "reload",
                     activate: true,
+                    onActivated: () => {
+                      publishedSnapshotRevision = getActiveSecretsRuntimeSnapshotRevision();
+                    },
                   },
                 );
                 nextSharedGatewaySessionGeneration =
@@ -212,16 +218,23 @@ export function createGatewayAuxHandlers(params: {
                 }
                 return { warningCount: prepared.warnings.length };
               } catch (err) {
-                await activateSecretsRuntimeSnapshot(previousSnapshot);
-                params.sharedGatewaySessionGenerationState.current =
-                  previousSharedGatewaySessionGeneration;
-                params.sharedGatewaySessionGenerationState.required =
-                  previousSharedGatewaySessionGenerationRequired;
-                if (sharedGatewaySessionGenerationChanged) {
-                  disconnectStaleSharedGatewayAuthClients({
-                    clients: params.clients,
-                    expectedGeneration: previousSharedGatewaySessionGeneration,
-                  });
+                const restored =
+                  publishedSnapshotRevision !== null &&
+                  (await activateSecretsRuntimeSnapshotIfCurrent(
+                    previousSnapshot,
+                    publishedSnapshotRevision,
+                  ));
+                if (restored) {
+                  params.sharedGatewaySessionGenerationState.current =
+                    previousSharedGatewaySessionGeneration;
+                  params.sharedGatewaySessionGenerationState.required =
+                    previousSharedGatewaySessionGenerationRequired;
+                  if (sharedGatewaySessionGenerationChanged) {
+                    disconnectStaleSharedGatewayAuthClients({
+                      clients: params.clients,
+                      expectedGeneration: previousSharedGatewaySessionGeneration,
+                    });
+                  }
                 }
                 for (const channel of stoppedChannels) {
                   params.logChannels.info(

@@ -150,6 +150,19 @@ export function activateSecretsRuntimeSnapshotState(params: {
   setRuntimeConfigSnapshotRefreshHandler(params.refreshHandler);
 }
 
+/** Activates only while the caller still owns the snapshot revision it prepared against. */
+export function activateSecretsRuntimeSnapshotStateIfCurrent(
+  params: Parameters<typeof activateSecretsRuntimeSnapshotState>[0] & {
+    expectedRevision: number;
+  },
+): boolean {
+  if (activeSnapshotRevision !== params.expectedRevision) {
+    return false;
+  }
+  activateSecretsRuntimeSnapshotState(params);
+  return true;
+}
+
 /**
  * Returns a cloned active secrets runtime snapshot for callers that need mutable data.
  */

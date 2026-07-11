@@ -90,11 +90,12 @@ type GatewayHotReloadState = {
   channelHealthMonitor: ChannelHealthMonitor | null;
 };
 
-async function activateSecretsRuntimeSnapshot(
+async function activateSecretsRuntimeSnapshotIfCurrent(
   snapshot: PreparedSecretsRuntimeSnapshot,
-): Promise<void> {
+  expectedRevision: number,
+): Promise<boolean> {
   const runtime = await import("../secrets/runtime.js");
-  runtime.activateSecretsRuntimeSnapshot(snapshot);
+  return runtime.activateSecretsRuntimeSnapshotIfCurrent(snapshot, expectedRevision);
 }
 
 type GatewayReloadLog = {
@@ -1158,23 +1159,33 @@ export function startManagedGatewayConfigReloader(
                   await commit();
                 } catch (err) {
                   if (!isCommitted()) {
+                    let restored = false;
                     if (previousSnapshot) {
-                      await activateSecretsRuntimeSnapshot(previousSnapshot);
-                    } else {
+                      restored = await activateSecretsRuntimeSnapshotIfCurrent(
+                        previousSnapshot,
+                        publishedSnapshotRevision ?? -1,
+                      );
+                    } else if (
+                      publishedSnapshotRevision !== null &&
+                      getActiveSecretsRuntimeSnapshotRevision() === publishedSnapshotRevision
+                    ) {
                       clearSecretsRuntimeSnapshot();
+                      restored = true;
                     }
-                    if (previousSnapshot && shouldRefreshContextWindowCache(plan)) {
-                      await refreshContextWindowCache(previousSnapshot.config);
+                    if (restored) {
+                      if (previousSnapshot && shouldRefreshContextWindowCache(plan)) {
+                        await refreshContextWindowCache(previousSnapshot.config);
+                      }
+                      params.sharedGatewaySessionGenerationState.current =
+                        previousSharedGatewaySessionGeneration;
+                      if (sharedGatewaySessionGenerationChanged) {
+                        disconnectStaleSharedGatewayAuthClients({
+                          clients: params.clients,
+                          expectedGeneration: previousSharedGatewaySessionGeneration,
+                        });
+                      }
+                      runtimeSecretsPublished = false;
                     }
-                    params.sharedGatewaySessionGenerationState.current =
-                      previousSharedGatewaySessionGeneration;
-                    if (sharedGatewaySessionGenerationChanged) {
-                      disconnectStaleSharedGatewayAuthClients({
-                        clients: params.clients,
-                        expectedGeneration: previousSharedGatewaySessionGeneration,
-                      });
-                    }
-                    runtimeSecretsPublished = false;
                   }
                   throw err;
                 }
@@ -1195,16 +1206,13 @@ export function startManagedGatewayConfigReloader(
                   throw new GatewayHotReloadStaleSecretsError();
                 }
               } else {
-                if (getActiveSecretsRuntimeSnapshotRevision() !== previousSnapshotRevision) {
+                if (
+                  !(await activateSecretsRuntimeSnapshotIfCurrent(
+                    prepared,
+                    previousSnapshotRevision,
+                  ))
+                ) {
                   throw new GatewayHotReloadStaleSecretsError();
-                }
-                if (params.activateRuntimeSecrets.activatePreparedSnapshot) {
-                  await params.activateRuntimeSecrets.activatePreparedSnapshot(prepared, {
-                    reason: "reload",
-                    activate: true,
-                  });
-                } else {
-                  await activateSecretsRuntimeSnapshot(prepared);
                 }
                 await publishRuntime();
               }
@@ -1228,16 +1236,16 @@ export function startManagedGatewayConfigReloader(
                   activate: true,
                 }),
               );
-            } else if (
-              publishedSnapshotRevision !== null &&
-              getActiveSecretsRuntimeSnapshotRevision() === publishedSnapshotRevision
-            ) {
+            } else if (publishedSnapshotRevision !== null) {
               if (previousSnapshot) {
-                await activateSecretsRuntimeSnapshot(previousSnapshot);
-              } else {
+                restored = await activateSecretsRuntimeSnapshotIfCurrent(
+                  previousSnapshot,
+                  publishedSnapshotRevision,
+                );
+              } else if (getActiveSecretsRuntimeSnapshotRevision() === publishedSnapshotRevision) {
                 clearSecretsRuntimeSnapshot();
+                restored = true;
               }
-              restored = true;
             }
             if (restored) {
               if (previousSnapshot && shouldRefreshContextWindowCache(plan)) {

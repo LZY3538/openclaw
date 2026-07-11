@@ -359,6 +359,54 @@ describe("gateway aux handlers", () => {
     );
   });
 
+  it("does not roll back over a snapshot published after secrets.reload activation", async () => {
+    const buildReloadPlan = buildRestartChannelsPlan("slack");
+    activateSnapshot(slackConfig("old-slack-secret"));
+    const prepared = createSnapshot(slackConfig("reload-secret"));
+    const concurrent = createSnapshot(slackConfig("concurrent-secret"));
+    const activateRuntimeSecrets = vi.fn(
+      async (
+        _config: OpenClawConfig,
+        activationParams: Parameters<GatewayAuxHandlerParams["activateRuntimeSecrets"]>[1],
+      ) => {
+        activateSecretsRuntimeSnapshot(prepared);
+        activationParams.onActivated?.();
+        return prepared;
+      },
+    );
+    const sharedGatewaySessionGenerationState = {
+      current: "gen-old" as string | undefined,
+      required: "gen-old" as string | undefined | null,
+    };
+    const startChannel = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        activateSecretsRuntimeSnapshot(concurrent);
+        sharedGatewaySessionGenerationState.current = "gen-concurrent";
+        sharedGatewaySessionGenerationState.required = "gen-concurrent";
+        throw new Error("slack refused to start");
+      })
+      .mockResolvedValue(undefined);
+
+    const { reload, respond } = createSecretsReloadHarness({
+      activateRuntimeSecrets,
+      buildReloadPlan,
+      sharedGatewaySessionGenerationState,
+      resolveSharedGatewaySessionGenerationForConfig: () => "gen-reload",
+      startChannel,
+      stopChannel: vi.fn().mockResolvedValue(undefined),
+    });
+
+    await reload();
+
+    expect(firstRespondCall(respond)[0]).toBe(false);
+    expect(getActiveSecretsRuntimeSnapshot()?.config).toEqual(slackConfig("concurrent-secret"));
+    expect(sharedGatewaySessionGenerationState).toEqual({
+      current: "gen-concurrent",
+      required: "gen-concurrent",
+    });
+  });
+
   it("attempts restart on rollback even when stopChannel itself throws mid-reload", async () => {
     // If stopChannel throws after partially stopping a channel (for example,
     // a plugin hook rejects after the runtime already closed the socket),

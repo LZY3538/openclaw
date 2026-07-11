@@ -236,6 +236,25 @@ function installGatewayStartupSecretsRuntimeMock(state: GatewayStartupSecretsRun
     return {
       prepareSecretsRuntimeSnapshot: runtimeState.prepareRuntimeSecretsSnapshot,
       activateSecretsRuntimeSnapshot: runtimeState.activateRuntimeSecretsSnapshot,
+      preflightActiveSecretsRuntimeSnapshotRefresh: async ({
+        sourceConfig,
+      }: {
+        sourceConfig: OpenClawConfig;
+      }) => await runtimeState.prepareRuntimeSecretsSnapshot({ config: sourceConfig }),
+      refreshActiveSecretsRuntimeSnapshotForConfig: async ({
+        sourceConfig,
+        preflightResult,
+      }: {
+        sourceConfig: OpenClawConfig;
+        preflightResult?: unknown;
+      }) => {
+        const snapshot =
+          preflightResult && typeof preflightResult === "object"
+            ? (preflightResult as PreparedSecretsRuntimeSnapshot)
+            : await runtimeState.prepareRuntimeSecretsSnapshot({ config: sourceConfig });
+        runtimeState.activateRuntimeSecretsSnapshot(snapshot);
+        return true;
+      },
     };
   });
 }
@@ -887,6 +906,25 @@ describe("gateway startup config secret preflight", () => {
       return {
         prepareSecretsRuntimeSnapshot: state.prepareRuntimeSecretsSnapshot,
         activateSecretsRuntimeSnapshot: state.activateRuntimeSecretsSnapshot,
+        preflightActiveSecretsRuntimeSnapshotRefresh: async ({
+          sourceConfig,
+        }: {
+          sourceConfig: OpenClawConfig;
+        }) => await state.prepareRuntimeSecretsSnapshot({ config: sourceConfig }),
+        refreshActiveSecretsRuntimeSnapshotForConfig: async ({
+          sourceConfig,
+          preflightResult,
+        }: {
+          sourceConfig: OpenClawConfig;
+          preflightResult?: unknown;
+        }) => {
+          const snapshot =
+            preflightResult && typeof preflightResult === "object"
+              ? (preflightResult as PreparedSecretsRuntimeSnapshot)
+              : await state.prepareRuntimeSecretsSnapshot({ config: sourceConfig });
+          state.activateRuntimeSecretsSnapshot(snapshot);
+          return true;
+        },
       };
     });
 
@@ -941,6 +979,64 @@ describe("gateway startup config secret preflight", () => {
       )["__gatewayStartupSecretsRuntimeMock"];
       rmSync(agentDir, { recursive: true, force: true });
       vi.resetModules();
+    }
+  });
+
+  it("retries a stale startup fast-path preflight against the newer runtime context", async () => {
+    const agentDir = mkdtempSync(path.join(tmpdir(), "openclaw-startup-fast-path-cas-"));
+    const config = (port: number) =>
+      gatewayTokenConfig(
+        asConfig({
+          agents: { list: [{ id: "default", agentDir }] },
+          gateway: { port },
+        }),
+      );
+    try {
+      const activateRuntimeSecrets = createRuntimeSecretsActivator(
+        runtimeSecretsActivatorOptionsForTest(),
+      );
+      await activateRuntimeSecrets(config(19_021), {
+        reason: "startup",
+        activate: true,
+      });
+      const { getRuntimeConfigSnapshotRefreshHandler } =
+        await import("../config/runtime-snapshot.js");
+      const staleRefreshHandler = getRuntimeConfigSnapshotRefreshHandler();
+      if (!staleRefreshHandler?.preflight) {
+        throw new Error("expected startup fast-path refresh preflight handler");
+      }
+      const desiredConfig = config(19_023);
+      const preflightResult = await staleRefreshHandler.preflight({
+        sourceConfig: desiredConfig,
+      });
+      const secretsRuntime = await import("../secrets/runtime.js");
+      const concurrent = await secretsRuntime.prepareSecretsRuntimeSnapshot({
+        config: config(19_022),
+        agentDirs: [agentDir],
+        loadAuthStore: () => ({
+          version: 1,
+          profiles: {
+            "openai:default": {
+              type: "api_key",
+              provider: "openai",
+              key: "newer-context-key",
+            },
+          },
+        }),
+      });
+      secretsRuntime.activateSecretsRuntimeSnapshot(concurrent);
+
+      await expect(
+        staleRefreshHandler.refresh({ sourceConfig: desiredConfig, preflightResult }),
+      ).resolves.toBe(true);
+
+      const active = getActiveSecretsRuntimeSnapshot();
+      expect(active?.sourceConfig.gateway?.port).toBe(19_023);
+      expect(active?.authStores[0]?.store.profiles["openai:default"]).toMatchObject({
+        key: "newer-context-key",
+      });
+    } finally {
+      rmSync(agentDir, { recursive: true, force: true });
     }
   });
 
