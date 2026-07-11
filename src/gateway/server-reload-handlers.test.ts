@@ -2019,7 +2019,7 @@ describe("gateway Gmail hot reload handlers", () => {
   function createGmailConfig(account: string): OpenClawConfig {
     return {
       gateway: { reload: { debounceMs: 0 } },
-      hooks: { enabled: true, gmail: { account } },
+      hooks: { enabled: true, token: "test-token", gmail: { account } },
     };
   }
 
@@ -2462,19 +2462,25 @@ describe("gateway Gmail hot reload handlers", () => {
       current: null,
     };
     let restartSignal: AbortSignal | undefined;
-    let restartEntered: (() => void) | undefined;
-    const restartStarted = new Promise<void>((resolve) => {
-      restartEntered = resolve;
+    type GmailRestartOutcome = { status: "started" } | { status: "failed"; message: string };
+    let settleRestart: ((outcome: GmailRestartOutcome) => void) | undefined;
+    const restartOutcome = new Promise<GmailRestartOutcome>((resolve) => {
+      settleRestart = resolve;
     });
     hoisted.startGmailWatcherWithLogs.mockImplementationOnce(
       async (params: GmailWatcherRestartParams) => {
         restartSignal = params.signal;
-        restartEntered?.();
+        settleRestart?.({ status: "started" });
         await new Promise<void>((resolve) => {
           params.signal?.addEventListener("abort", () => resolve(), { once: true });
         });
       },
     );
+    const logReload = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn((message: string) => settleRestart?.({ status: "failed", message })),
+    };
     const initialConfig = createGmailConfig("old@example.com");
     const nextConfig = createGmailConfig("next@example.com");
     const readSnapshot = vi.fn(async () => ({
@@ -2533,7 +2539,7 @@ describe("gateway Gmail hot reload handlers", () => {
       logHooks: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       logChannels: { info: vi.fn(), error: vi.fn() },
       logCron: { error: vi.fn() },
-      logReload: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      logReload,
       channelManager: {} as never,
       activateRuntimeSecrets: vi.fn(async (config: OpenClawConfig) => ({
         sourceConfig: config,
@@ -2564,7 +2570,7 @@ describe("gateway Gmail hot reload handlers", () => {
       sourceFingerprint: "source-hash-next",
       writtenAtMs: Date.now(),
     });
-    await restartStarted;
+    expect(await restartOutcome).toEqual({ status: "started" });
     expect(restartSignal?.aborted).toBe(false);
 
     await reloader.stop();
