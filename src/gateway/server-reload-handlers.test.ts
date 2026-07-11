@@ -2352,7 +2352,21 @@ describe("gateway Gmail hot reload handlers", () => {
       initialCompareConfig: initialConfig,
       initialInternalWriteHash: null,
       watchPath: "/tmp/openclaw.json",
-      readSnapshot: vi.fn() as never,
+      readSnapshot: vi.fn(async () => ({
+        path: "/tmp/openclaw.json",
+        exists: true,
+        raw: "{}",
+        parsed: {},
+        sourceConfig: nextConfig,
+        resolved: nextConfig,
+        valid: true,
+        runtimeConfig: nextConfig,
+        config: nextConfig,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+        hash: "hot-reload-next",
+      })) as never,
       promoteSnapshot: promoteSnapshot as never,
       subscribeToWrites: ((listener: (event: ConfigWriteNotification) => void) => {
         writeListenerRef.current = listener;
