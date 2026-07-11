@@ -357,6 +357,7 @@ const testGatewayRestartListener = () => {};
 
 beforeEach(() => {
   process.on("SIGUSR1", testGatewayRestartListener);
+  resetGatewayWorkAdmission();
   resetProcessRegistryForTests();
   delete process.env.OPENCLAW_SKIP_CHANNELS;
   delete process.env.OPENCLAW_SKIP_PROVIDERS;
@@ -365,6 +366,7 @@ beforeEach(() => {
 afterEach(() => {
   process.removeListener("SIGUSR1", testGatewayRestartListener);
   setGatewaySigusr1RestartPolicy({ allowExternal: false });
+  resetGatewayWorkAdmission();
   vi.useRealTimers();
   resetProcessRegistryForTests();
   hoisted.startGmailWatcherWithLogs.mockClear();
