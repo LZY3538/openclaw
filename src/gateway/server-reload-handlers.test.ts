@@ -2281,6 +2281,7 @@ describe("gateway Gmail hot reload handlers", () => {
   });
 
   it("retries managed hot reload when secrets change before publication", async () => {
+    vi.useFakeTimers();
     const writeListenerRef: { current: ((event: ConfigWriteNotification) => void) | null } = {
       current: null,
     };
@@ -2292,17 +2293,22 @@ describe("gateway Gmail hot reload handlers", () => {
       gateway: { reload: { debounceMs: 0 } },
       hooks: { enabled: true, token: "test-token", path: "/next" },
     } as OpenClawConfig;
-    const initialSnapshot = {
+    const initialSnapshot: PreparedSecretsRuntimeSnapshot = {
       sourceConfig: initialConfig,
       config: initialConfig,
       authStores: [],
       warnings: [],
       webTools: createEmptyRuntimeWebToolsMetadata(),
     };
-    const refreshedSnapshot = {
+    const refreshedSnapshot: PreparedSecretsRuntimeSnapshot = {
       ...initialSnapshot,
-      authStores: [{ source: "refreshed" }],
-    } as never;
+      authStores: [
+        {
+          agentDir: "/tmp/refreshed-agent",
+          store: { version: 1, profiles: {} },
+        },
+      ],
+    };
     activateSecretsRuntimeSnapshot(initialSnapshot);
     const initialSnapshotRevision = getActiveSecretsRuntimeSnapshotRevision();
     const activatePreparedSnapshotIfCurrent = vi.fn(
@@ -2338,14 +2344,20 @@ describe("gateway Gmail hot reload handlers", () => {
       { activatePreparedSnapshotIfCurrent },
     );
     const commitTerminalConfig = vi.fn();
-    let markPromotionComplete: (() => void) | undefined;
-    const promotionComplete = new Promise<void>((resolve) => {
-      markPromotionComplete = resolve;
+    type ReloadOutcome = { status: "promoted" } | { status: "failed"; message: string };
+    let settleReload: ((outcome: ReloadOutcome) => void) | undefined;
+    const reloadOutcome = new Promise<ReloadOutcome>((resolve) => {
+      settleReload = resolve;
     });
     const promoteSnapshot = vi.fn(async () => {
-      markPromotionComplete?.();
+      settleReload?.({ status: "promoted" });
       return true;
     });
+    const logReload = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn((message: string) => settleReload?.({ status: "failed", message })),
+    };
     const setState = vi.fn();
     const reloader = startManagedGatewayConfigReloader({
       minimalTestGateway: false,
@@ -2402,7 +2414,7 @@ describe("gateway Gmail hot reload handlers", () => {
       logHooks: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       logChannels: { info: vi.fn(), error: vi.fn() },
       logCron: { error: vi.fn() },
-      logReload: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      logReload,
       channelManager: {} as never,
       activateRuntimeSecrets: activateRuntimeSecrets as never,
       resolveSharedGatewaySessionGenerationForConfig: () => undefined,
@@ -2427,7 +2439,8 @@ describe("gateway Gmail hot reload handlers", () => {
       sourceFingerprint: "source-hot-reload-next",
       writtenAtMs: Date.now(),
     });
-    await promotionComplete;
+    await vi.runAllTimersAsync();
+    expect(await reloadOutcome).toEqual({ status: "promoted" });
 
     try {
       expect(activateRuntimeSecrets).toHaveBeenCalledTimes(2);
