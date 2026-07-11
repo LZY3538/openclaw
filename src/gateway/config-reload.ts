@@ -115,7 +115,7 @@ export function startGatewayConfigReloader(opts: {
   /** Publishes runtime state after a hot or no-op config transaction. */
   onConfigApplied?: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => void | Promise<void>;
   /** Retires rejected lifecycle work after any newer config transaction is accepted. */
-  onConfigAccepted?: () => void | Promise<void>;
+  onConfigAccepted?: (nextConfig: OpenClawConfig) => void | Promise<void>;
   onNoopConfigCommit: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => Promise<void>;
   onHotReload: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => Promise<void>;
   onRestart: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => void | Promise<void>;
@@ -258,7 +258,7 @@ export function startGatewayConfigReloader(opts: {
     ];
     const nextSettings = resolveGatewayReloadSettings(nextConfig);
     const commitReloadBaseline = async () => {
-      await opts.onConfigAccepted?.();
+      await opts.onConfigAccepted?.(nextConfig);
       currentConfig = nextConfig;
       currentCompareConfig = nextCompareConfig;
       currentPluginInstallRecords = nextPluginInstallRecords;

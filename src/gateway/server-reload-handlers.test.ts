@@ -50,6 +50,7 @@ import {
   createGatewayReloadHandlers as createGatewayReloadHandlersImpl,
   startManagedGatewayConfigReloader as startManagedGatewayConfigReloaderImpl,
 } from "./server-reload-handlers.js";
+import { createTerminalLaunchPolicy } from "./terminal/launch.js";
 
 type ReloadHandlerParams = Parameters<typeof createGatewayReloadHandlersImpl>[0];
 type ManagedReloaderParams = Parameters<typeof startManagedGatewayConfigReloaderImpl>[0];
@@ -879,13 +880,13 @@ describe("gateway restart deferral preflight", () => {
     try {
       const rejected = requestGatewayRestart(restartPlan, {});
       rejected.settle("rejected");
-      retireRejectedRestartRequest();
+      expect(retireRejectedRestartRequest()).toBe(true);
       await vi.advanceTimersByTimeAsync(1_000);
       expect(requestRecoveryRestart).toHaveBeenCalledTimes(1);
 
       const committed = requestGatewayRestart(restartPlan, {});
       committed.settle("committed");
-      retireRejectedRestartRequest();
+      expect(retireRejectedRestartRequest()).toBe(false);
       await vi.advanceTimersByTimeAsync(1_000);
       expect(requestRecoveryRestart).toHaveBeenCalledTimes(3);
     } finally {
@@ -2250,6 +2251,7 @@ describe("gateway Gmail hot reload handlers", () => {
       clients: [],
       reconcileTerminalSessions: vi.fn(),
       commitTerminalConfig: vi.fn(),
+      retireTerminalRestartConfig: vi.fn(),
     });
     const registeredWriteListener = writeListenerRef.current;
     if (!registeredWriteListener) {
@@ -2275,6 +2277,145 @@ describe("gateway Gmail hot reload handlers", () => {
     });
     expect(heartbeatRunner.updateConfig).not.toHaveBeenCalled();
     await reloader.stop();
+  });
+
+  it("retires terminal restrictions when an accepted revert supersedes a rejected restart", async () => {
+    vi.useFakeTimers();
+    const initialConfig: OpenClawConfig = {
+      gateway: {
+        port: 18789,
+        reload: { debounceMs: 0 },
+        terminal: { enabled: true },
+      },
+    };
+    const rejectedConfig: OpenClawConfig = {
+      gateway: {
+        port: 18790,
+        reload: { debounceMs: 0 },
+        terminal: { enabled: false },
+      },
+    };
+    let snapshotConfig = rejectedConfig;
+    let snapshotHash = "rejected-restart";
+    const writeListenerRef: { current: ((event: ConfigWriteNotification) => void) | null } = {
+      current: null,
+    };
+    const terminalPolicy = createTerminalLaunchPolicy(initialConfig);
+    const requestRecoveryRestart = vi
+      .fn<NonNullable<ManagedReloaderParams["requestRecoveryRestart"]>>()
+      .mockReturnValue({ status: "failed" });
+    const reloader = startManagedGatewayConfigReloader({
+      minimalTestGateway: false,
+      initialConfig,
+      initialCompareConfig: initialConfig,
+      initialInternalWriteHash: null,
+      watchPath: "/tmp/openclaw.json",
+      readSnapshot: vi.fn(async () => ({
+        path: "/tmp/openclaw.json",
+        exists: true,
+        raw: "{}",
+        parsed: {},
+        sourceConfig: snapshotConfig,
+        resolved: snapshotConfig,
+        valid: true,
+        runtimeConfig: snapshotConfig,
+        config: snapshotConfig,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+        hash: snapshotHash,
+      })) as never,
+      promoteSnapshot: vi.fn(async () => true) as never,
+      subscribeToWrites: ((listener: (event: ConfigWriteNotification) => void) => {
+        writeListenerRef.current = listener;
+        return () => {
+          if (writeListenerRef.current === listener) {
+            writeListenerRef.current = null;
+          }
+        };
+      }) as never,
+      deps: {} as never,
+      broadcast: vi.fn(),
+      getState: () => ({
+        hooksConfig: {} as never,
+        hookClientIpConfig: {} as never,
+        heartbeatRunner: { stop: vi.fn(), updateConfig: vi.fn() } as never,
+        cronState: {
+          cron: { start: vi.fn(async () => {}), stop: vi.fn() },
+          storePath: "/tmp/cron.json",
+          cronEnabled: false,
+        } as never,
+        channelHealthMonitor: null,
+      }),
+      setState: vi.fn(),
+      startChannel: vi.fn(async () => {}),
+      stopChannel: vi.fn(async () => {}),
+      reloadPlugins: vi.fn(
+        async (): Promise<GatewayPluginReloadResult> => ({
+          restartChannels: new Set(),
+          activeChannels: new Set(),
+        }),
+      ),
+      logHooks: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      logChannels: { info: vi.fn(), error: vi.fn() },
+      logCron: { error: vi.fn() },
+      logReload: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      channelManager: {} as never,
+      activateRuntimeSecrets: vi.fn(async (config: OpenClawConfig) => ({
+        sourceConfig: config,
+        config,
+        authStores: [],
+        warnings: [],
+        webTools: createEmptyRuntimeWebToolsMetadata(),
+      })) as never,
+      resolveSharedGatewaySessionGenerationForConfig: () => undefined,
+      sharedGatewaySessionGenerationState: { current: undefined, required: null },
+      clients: [],
+      reconcileTerminalSessions: (plan, nextConfig) => {
+        terminalPolicy.prepareConfig(nextConfig, { restartPending: plan.restartGateway });
+      },
+      commitTerminalConfig: terminalPolicy.commitConfig,
+      retireTerminalRestartConfig: terminalPolicy.retireRestartConfig,
+      requestRecoveryRestart,
+    });
+    const write = writeListenerRef.current;
+    if (!write) {
+      throw new Error("Expected config write listener to be registered");
+    }
+
+    try {
+      write({
+        configPath: "/tmp/openclaw.json",
+        sourceConfig: rejectedConfig,
+        runtimeConfig: rejectedConfig,
+        persistedHash: snapshotHash,
+        revision: 1,
+        fingerprint: "runtime-rejected-restart",
+        sourceFingerprint: "source-rejected-restart",
+        writtenAtMs: Date.now(),
+      });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(terminalPolicy.isEnabled()).toBe(false);
+
+      snapshotConfig = initialConfig;
+      snapshotHash = "accepted-revert";
+      write({
+        configPath: "/tmp/openclaw.json",
+        sourceConfig: initialConfig,
+        runtimeConfig: initialConfig,
+        persistedHash: snapshotHash,
+        revision: 2,
+        fingerprint: "runtime-accepted-revert",
+        sourceFingerprint: "source-accepted-revert",
+        writtenAtMs: Date.now(),
+      });
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(terminalPolicy.isEnabled()).toBe(true);
+      expect(requestRecoveryRestart).toHaveBeenCalledOnce();
+    } finally {
+      await reloader.stop();
+    }
   });
 
   it("retries managed hot reload when secrets change before publication", async () => {
@@ -2387,6 +2528,7 @@ describe("gateway Gmail hot reload handlers", () => {
       clients: [],
       reconcileTerminalSessions: vi.fn(),
       commitTerminalConfig,
+      retireTerminalRestartConfig: vi.fn(),
     });
     const registeredWriteListener = writeListenerRef.current;
     if (!registeredWriteListener) {
@@ -2507,6 +2649,7 @@ describe("gateway Gmail hot reload handlers", () => {
       clients: [],
       reconcileTerminalSessions: vi.fn(),
       commitTerminalConfig: vi.fn(),
+      retireTerminalRestartConfig: vi.fn(),
     });
     const registeredWriteListener = writeListenerRef.current;
     if (!registeredWriteListener) {
@@ -2619,6 +2762,7 @@ describe("gateway Gmail hot reload handlers", () => {
       clients: [],
       reconcileTerminalSessions: vi.fn(),
       commitTerminalConfig: vi.fn(),
+      retireTerminalRestartConfig: vi.fn(),
     });
     const registeredWriteListener = writeListenerRef.current;
     if (!registeredWriteListener) {
@@ -2733,6 +2877,7 @@ describe("gateway Gmail hot reload handlers", () => {
       clients: [],
       reconcileTerminalSessions: vi.fn(),
       commitTerminalConfig: vi.fn(),
+      retireTerminalRestartConfig: vi.fn(),
     });
     const registeredWriteListener = writeListenerRef.current;
     if (!registeredWriteListener) {
@@ -3569,6 +3714,7 @@ describe("deferred channel reload abort generation", () => {
       clients: [],
       reconcileTerminalSessions: vi.fn(),
       commitTerminalConfig,
+      retireTerminalRestartConfig: vi.fn(),
     });
     const registeredWriteListener = writeListenerRef.current;
     if (!registeredWriteListener) {

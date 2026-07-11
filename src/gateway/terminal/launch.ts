@@ -36,6 +36,7 @@ type TerminalLaunchPolicy = {
   isEnabled: () => boolean;
   prepareConfig: (config: OpenClawConfig, options: { restartPending: boolean }) => void;
   commitConfig: () => void;
+  retireRestartConfig: (acceptedConfig: OpenClawConfig) => void;
 };
 
 /** Picks the interactive shell: explicit config, then the host login shell. */
@@ -219,6 +220,8 @@ export function createTerminalLaunchPolicy(initialConfig: OpenClawConfig): Termi
       // earlier reload mode ignored. Advance agent policy, but preserve the
       // terminal subtree already owned by the active or pending process.
       if (hasPendingRestart) {
+        preparedConfig = preserveTerminalConfig(config, activeConfig);
+        accumulateCommitRestrictions(preparedConfig);
         accumulateRestartRestrictions(config);
         return;
       }
@@ -226,12 +229,26 @@ export function createTerminalLaunchPolicy(initialConfig: OpenClawConfig): Termi
       accumulateCommitRestrictions(preparedConfig);
     },
     commitConfig: () => {
-      if (preparedConfig && !hasPendingRestart) {
+      // A newer hot transaction can finish while an older rejected restart is
+      // still fail-closed. Preserve its candidate until that restart is retired.
+      if (hasPendingRestart) {
+        return;
+      }
+      if (preparedConfig) {
         activeConfig = preparedConfig;
       }
       preparedConfig = null;
       terminalDisabledUntilCommit = false;
       blockedAgentsUntilCommit.clear();
+    },
+    retireRestartConfig: (acceptedConfig) => {
+      hasPendingRestart = false;
+      terminalDisabledUntilRestart = false;
+      blockedAgentsUntilRestart.clear();
+      preparedConfig = preserveTerminalConfig(acceptedConfig, activeConfig);
+      terminalDisabledUntilCommit = false;
+      blockedAgentsUntilCommit.clear();
+      accumulateCommitRestrictions(preparedConfig);
     },
   };
 }

@@ -285,6 +285,54 @@ describe("createTerminalLaunchPolicy", () => {
     expect(restartPolicy.resolve().ok).toBe(false);
   });
 
+  it("releases a rejected restart restriction after an accepted revert", () => {
+    const baseConfig: OpenClawConfig = {
+      gateway: { terminal: { enabled: true } },
+    };
+    const policy = createTerminalLaunchPolicy(baseConfig);
+
+    policy.prepareConfig({}, { restartPending: true });
+    policy.prepareConfig(
+      {
+        ...baseConfig,
+        agents: { defaults: { sandbox: { mode: "all" } } },
+      },
+      { restartPending: false },
+    );
+    policy.commitConfig();
+    expect(policy.isEnabled()).toBe(false);
+
+    policy.retireRestartConfig(baseConfig);
+    policy.commitConfig();
+    expect(policy.isEnabled()).toBe(true);
+  });
+
+  it("commits a newer hot candidate after a rejected restart is retired", () => {
+    const baseConfig: OpenClawConfig = {
+      gateway: { terminal: { enabled: true } },
+      agents: { defaults: { sandbox: { mode: "all" } } },
+    };
+    const policy = createTerminalLaunchPolicy(baseConfig);
+
+    policy.prepareConfig({}, { restartPending: true });
+    policy.prepareConfig(
+      {
+        gateway: { terminal: { enabled: true } },
+        agents: { defaults: { sandbox: { mode: "off" } } },
+      },
+      { restartPending: false },
+    );
+    policy.commitConfig();
+    expect(policy.resolve().ok).toBe(false);
+
+    policy.retireRestartConfig({
+      gateway: { terminal: { enabled: true } },
+      agents: { defaults: { sandbox: { mode: "off" } } },
+    });
+    policy.commitConfig();
+    expect(policy.resolve().ok).toBe(true);
+  });
+
   it("does not promote a terminal setting previously ignored by reload mode", () => {
     const disabledPolicy = createTerminalLaunchPolicy({});
     disabledPolicy.prepareConfig(

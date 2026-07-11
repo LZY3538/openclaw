@@ -269,6 +269,7 @@ type ManagedGatewayConfigReloaderParams = Omit<
   clients: Iterable<SharedGatewayAuthClient>;
   reconcileTerminalSessions: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => void;
   commitTerminalConfig: () => void;
+  retireTerminalRestartConfig: (acceptedConfig: OpenClawConfig) => void;
 };
 
 export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) {
@@ -875,9 +876,11 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
   };
 
   const retireRejectedRestartRequest = () => {
-    if (restartRequestTransaction?.state === "rejected") {
-      supersedeRestartRequest();
+    if (restartRequestTransaction?.state !== "rejected") {
+      return false;
     }
+    supersedeRestartRequest();
+    return true;
   };
 
   const requestGatewayRestartForGeneration = (
@@ -1104,7 +1107,13 @@ export function startManagedGatewayConfigReloader(
     promoteSnapshot: async (snapshot, _reason) => await params.promoteSnapshot(snapshot),
     subscribeToWrites: params.subscribeToWrites,
     onConfigChange: (plan, nextConfig) => params.reconcileTerminalSessions(plan, nextConfig),
-    onConfigAccepted: retireRejectedRestartRequest,
+    onConfigAccepted: (nextConfig) => {
+      if (!retireRejectedRestartRequest()) {
+        return;
+      }
+      params.retireTerminalRestartConfig(nextConfig);
+      params.commitTerminalConfig();
+    },
     onConfigApplied: () => params.commitTerminalConfig(),
     onNoopConfigCommit: async (_plan, nextConfig) => {
       await params.activateRuntimeSecrets(nextConfig, {
