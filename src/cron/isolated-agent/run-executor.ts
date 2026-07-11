@@ -277,6 +277,8 @@ export function createCronPromptExecutor(params: {
     resolveFallbackCronSourceDeliveryPlan(params.job, params.resolvedDelivery);
   const sourceReplyDeliveryMode = sourceDelivery.sourceReplyDeliveryMode;
   const messageChannel = sourceDelivery.target.channel ?? params.resolvedDelivery.channel;
+  // Cron prompts may intentionally have nothing to report; both runners must agree on silence.
+  const allowEmptyAssistantReplyAsSilent = true;
   const deliveryTargetRuntimeContext = buildCronDeliveryTargetRuntimeContext({
     resolvedDeliveryOk: params.resolvedDeliveryOk,
     messageToolPromptEnabled: params.messageToolPromptEnabled,
@@ -427,9 +429,7 @@ export function createCronPromptExecutor(params: {
             timeoutMs: params.timeoutMs,
             runId: params.cronSession.sessionEntry.sessionId,
             lane: resolveCronAgentLane(params.lane),
-            // Intentionally-silent cron jobs (watchers that say nothing unless
-            // there is something to report) should not throw empty_response.
-            allowEmptyAssistantReplyAsSilent: true,
+            allowEmptyAssistantReplyAsSilent,
             cliSessionId: cliSessionBinding?.sessionId,
             cliSessionBinding: guardedCliSessionBinding,
             skillsSnapshot: params.skillsSnapshot,
@@ -544,9 +544,7 @@ export function createCronPromptExecutor(params: {
             : undefined,
           sourceReplyDeliveryMode,
           runId: params.cronSession.sessionEntry.sessionId,
-          // Intentionally-silent cron jobs (watchers that say nothing unless
-          // there is something to report) should not throw empty_response.
-          allowEmptyAssistantReplyAsSilent: true,
+          allowEmptyAssistantReplyAsSilent,
           requireExplicitMessageTarget: sourceDelivery.messageTool.requireExplicitTarget,
           disableMessageTool: !sourceDelivery.messageTool.enabled,
           forceMessageTool: sourceDelivery.messageTool.force,
