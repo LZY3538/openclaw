@@ -119,7 +119,10 @@ export function startGatewayConfigReloader(opts: {
   /** Publishes runtime state after a hot or no-op config transaction. */
   onConfigApplied?: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => void | Promise<void>;
   /** Retires rejected lifecycle work after any newer config transaction is accepted. */
-  onConfigAccepted?: (nextConfig: OpenClawConfig) => void | Promise<void>;
+  onConfigAccepted?: (
+    nextConfig: OpenClawConfig,
+    ownership: GatewayConfigReloadTransactionOwnership,
+  ) => void | Promise<void>;
   onNoopConfigCommit: (
     plan: GatewayReloadPlan,
     nextConfig: OpenClawConfig,
@@ -156,7 +159,6 @@ export function startGatewayConfigReloader(opts: {
   let running = false;
   let stopped = false;
   const activeReloads = new Set<Promise<void>>();
-  let restartQueued = false;
   let missingConfigRetries = 0;
   let configWriteEpoch = 0;
   let pendingInProcessConfig: {
@@ -188,21 +190,16 @@ export function startGatewayConfigReloader(opts: {
   const schedule = () => {
     scheduleAfter(settings.debounceMs);
   };
-  const queueRestart = async (
+  const prepareRestart = async (
     plan: GatewayReloadPlan,
     nextConfig: OpenClawConfig,
     ownership: GatewayConfigReloadTransactionOwnership,
   ) => {
-    if (restartQueued) {
-      return;
-    }
-    restartQueued = true;
     try {
-      // Restart preparation reads secrets and can mutate auth/runtime state.
-      // Keep it inside the accepted config transaction instead of detaching it.
+      // Every accepted restart candidate validates inside its config
+      // transaction. Only downstream signal delivery may coalesce.
       await opts.onRestart(plan, nextConfig, ownership);
     } catch (err) {
-      restartQueued = false;
       opts.log.error(`config restart failed: ${String(err)}`);
       // Failed restart admission must reject the transaction. Otherwise the
       // persisted snapshot becomes the baseline and the same config cannot retry.
@@ -285,7 +282,7 @@ export function startGatewayConfigReloader(opts: {
     ];
     const nextSettings = resolveGatewayReloadSettings(nextConfig);
     const commitReloadBaseline = async () => {
-      await opts.onConfigAccepted?.(nextConfig);
+      await opts.onConfigAccepted?.(nextConfig, ownership);
       currentConfig = nextConfig;
       currentCompareConfig = nextCompareConfig;
       currentPluginInstallRecords = nextPluginInstallRecords;
@@ -338,14 +335,14 @@ export function startGatewayConfigReloader(opts: {
         restartReasons: [...plan.restartReasons, followUp.reason],
       };
       await opts.onConfigChange?.(restartPlan, nextConfig);
-      await queueRestart(restartPlan, nextConfig, ownership);
+      await prepareRestart(restartPlan, nextConfig, ownership);
       await commitReloadBaseline();
       return;
     }
     if (nextSettings.mode === "restart") {
       const restartPlan = { ...plan, restartGateway: true };
       await opts.onConfigChange?.(restartPlan, nextConfig);
-      await queueRestart(restartPlan, nextConfig, ownership);
+      await prepareRestart(restartPlan, nextConfig, ownership);
       await commitReloadBaseline();
       return;
     }
@@ -360,7 +357,7 @@ export function startGatewayConfigReloader(opts: {
         return;
       }
       await opts.onConfigChange?.(plan, nextConfig);
-      await queueRestart(plan, nextConfig, ownership);
+      await prepareRestart(plan, nextConfig, ownership);
       await commitReloadBaseline();
       return;
     }

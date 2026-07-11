@@ -338,6 +338,206 @@ function createReloadHandlersForTest(
   };
 }
 
+function createManagedRestartSequenceHarness() {
+  const initialConfig = {
+    gateway: {
+      port: 18789,
+      reload: { debounceMs: 0 },
+      terminal: { enabled: true },
+    },
+  } as OpenClawConfig;
+  const deferredConfig = {
+    gateway: {
+      port: 18790,
+      reload: { debounceMs: 0 },
+      terminal: { enabled: true },
+      auth: {
+        mode: "token",
+        token: {
+          source: "env",
+          provider: "default",
+          id: "RESTART_A_TOKEN",
+        },
+      },
+    },
+  } as OpenClawConfig;
+  const invalidConfig = {
+    gateway: {
+      ...deferredConfig.gateway,
+      auth: {
+        mode: "token",
+        token: {
+          source: "env",
+          provider: "default",
+          id: "MISSING_RESTART_TOKEN",
+        },
+      },
+      terminal: { enabled: false },
+    },
+  } as OpenClawConfig;
+  const replacementConfig = {
+    gateway: {
+      ...deferredConfig.gateway,
+      bind: "lan",
+    },
+  } as OpenClawConfig;
+  const terminalPolicy = createTerminalLaunchPolicy(initialConfig);
+  const writeListenerRef: { current: ((event: ConfigWriteNotification) => void) | null } = {
+    current: null,
+  };
+  let snapshotConfig = initialConfig;
+  let snapshotHash = "initial";
+  const unavailableSecretIds = new Set(["MISSING_RESTART_TOKEN"]);
+  let recordPromotion: ((hash: string) => void) | undefined;
+  let recordReloadError: ((message: string) => void) | undefined;
+  const nextPromotion = () =>
+    new Promise<string>((resolve) => {
+      recordPromotion = resolve;
+    });
+  const nextReloadError = () =>
+    new Promise<string>((resolve) => {
+      recordReloadError = resolve;
+    });
+  const promoteSnapshot = vi.fn(async (snapshot: { hash?: string }) => {
+    recordPromotion?.(snapshot.hash ?? "");
+    recordPromotion = undefined;
+    return true;
+  });
+  const logReload = {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn((message: string) => {
+      recordReloadError?.(message);
+      recordReloadError = undefined;
+    }),
+  };
+  const activateRuntimeSecrets = vi.fn(async (config: OpenClawConfig) => {
+    const token = config.gateway?.auth?.token;
+    if (
+      typeof token === "object" &&
+      token !== null &&
+      "id" in token &&
+      unavailableSecretIds.has(token.id)
+    ) {
+      throw new Error(`required SecretRef ${token.id} is unavailable`);
+    }
+    return {
+      sourceConfig: config,
+      config,
+      authStores: [],
+      warnings: [],
+      webTools: createEmptyRuntimeWebToolsMetadata(),
+    };
+  });
+  const requestRecoveryRestart = vi.fn<NonNullable<ReloadHandlerParams["requestRecoveryRestart"]>>(
+    () => ({ status: "emitted" }),
+  );
+  const reloader = startManagedGatewayConfigReloader({
+    minimalTestGateway: false,
+    initialConfig,
+    initialCompareConfig: initialConfig,
+    initialInternalWriteHash: null,
+    watchPath: "/tmp/openclaw.json",
+    readSnapshot: vi.fn(async () => ({
+      path: "/tmp/openclaw.json",
+      exists: true,
+      raw: "{}",
+      parsed: snapshotConfig,
+      sourceConfig: snapshotConfig,
+      resolved: snapshotConfig,
+      valid: true,
+      runtimeConfig: snapshotConfig,
+      config: snapshotConfig,
+      issues: [],
+      warnings: [],
+      legacyIssues: [],
+      hash: snapshotHash,
+    })) as never,
+    promoteSnapshot: promoteSnapshot as never,
+    subscribeToWrites: ((listener: (event: ConfigWriteNotification) => void) => {
+      writeListenerRef.current = listener;
+      return () => {
+        if (writeListenerRef.current === listener) {
+          writeListenerRef.current = null;
+        }
+      };
+    }) as never,
+    deps: {} as never,
+    broadcast: vi.fn(),
+    getState: () => ({
+      hooksConfig: {} as never,
+      hookClientIpConfig: {} as never,
+      heartbeatRunner: { stop: vi.fn(), updateConfig: vi.fn() } as never,
+      cronState: {
+        cron: { start: vi.fn(async () => {}), stop: vi.fn() },
+        storePath: "/tmp/cron.json",
+        cronEnabled: false,
+      } as never,
+      channelHealthMonitor: null,
+    }),
+    setState: vi.fn(),
+    startChannel: vi.fn(async () => {}),
+    stopChannel: vi.fn(async () => {}),
+    reloadPlugins: vi.fn(
+      async (): Promise<GatewayPluginReloadResult> => ({
+        restartChannels: new Set(),
+        activeChannels: new Set(),
+      }),
+    ),
+    logHooks: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    logChannels: { info: vi.fn(), error: vi.fn() },
+    logCron: { error: vi.fn() },
+    logReload,
+    channelManager: {} as never,
+    activateRuntimeSecrets: activateRuntimeSecrets as never,
+    resolveSharedGatewaySessionGenerationForConfig: () => undefined,
+    sharedGatewaySessionGenerationState: { current: undefined, required: null },
+    clients: [],
+    prepareTerminalConfig: (plan, nextConfig) => {
+      terminalPolicy.prepareConfig(nextConfig, { restartPending: plan.restartGateway });
+    },
+    reconcileTerminalSessions: vi.fn(),
+    commitTerminalConfig: terminalPolicy.commitConfig,
+    acceptTerminalConfig: terminalPolicy.acceptConfig,
+    requestRecoveryRestart,
+  });
+  const writeConfig = (config: OpenClawConfig, hash: string, revision: number) => {
+    const listener = writeListenerRef.current;
+    if (!listener) {
+      throw new Error("Expected config write listener to be registered");
+    }
+    snapshotConfig = config;
+    snapshotHash = hash;
+    listener({
+      configPath: "/tmp/openclaw.json",
+      sourceConfig: config,
+      runtimeConfig: config,
+      persistedHash: hash,
+      revision,
+      fingerprint: `runtime-${hash}`,
+      sourceFingerprint: `source-${hash}`,
+      writtenAtMs: Date.now(),
+    });
+  };
+
+  return {
+    activateRuntimeSecrets,
+    deferredConfig,
+    initialConfig,
+    invalidConfig,
+    logReload,
+    nextPromotion,
+    nextReloadError,
+    promoteSnapshot,
+    reloader,
+    replacementConfig,
+    requestRecoveryRestart,
+    terminalPolicy,
+    setSecretUnavailable: (id: string) => unavailableSecretIds.add(id),
+    writeConfig,
+  };
+}
+
 async function withGatewayRestartSignal(
   run: (signalSpy: ReturnType<typeof vi.fn>) => Promise<void>,
 ) {
@@ -1091,7 +1291,7 @@ describe("gateway restart deferral preflight", () => {
     }
   });
 
-  it("retires only retries owned by a rejected config transaction", async () => {
+  it("retires a rejected preflight after it supersedes committed restart work", async () => {
     const requestRecoveryRestart = vi
       .fn<NonNullable<ReloadHandlerParams["requestRecoveryRestart"]>>()
       .mockReturnValue({ status: "failed" });
@@ -1135,9 +1335,9 @@ describe("gateway restart deferral preflight", () => {
       committed.settle("committed");
       const rejectedPreflight = beginGatewayRestartLifecycle();
       rejectedPreflight.settle("rejected");
-      expect(retireRejectedRestartRequest()).toBe(false);
+      expect(retireRejectedRestartRequest()).toBe(true);
       await vi.advanceTimersByTimeAsync(1_000);
-      expect(requestRecoveryRestart).toHaveBeenCalledTimes(3);
+      expect(requestRecoveryRestart).toHaveBeenCalledTimes(2);
     } finally {
       stopRestartRetries();
     }
@@ -2698,6 +2898,155 @@ describe("gateway Gmail hot reload handlers", () => {
       expect(terminalPolicy.isEnabled()).toBe(true);
     } finally {
       await reloader.stop();
+    }
+  });
+
+  it("cancels a deferred restart when a newer config fails required SecretRef preflight", async () => {
+    vi.useFakeTimers();
+    const harness = createManagedRestartSequenceHarness();
+    hoisted.activeTaskBlockers.push({
+      taskId: "restart-sequence-blocker",
+      status: "running",
+      runtime: "subagent",
+    });
+
+    try {
+      const deferredPromotion = harness.nextPromotion();
+      harness.writeConfig(harness.deferredConfig, "deferred-a", 1);
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(deferredPromotion).resolves.toBe("deferred-a");
+      expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
+
+      const reloadError = harness.nextReloadError();
+      harness.writeConfig(harness.invalidConfig, "invalid-b", 2);
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(reloadError).resolves.toBe(
+        "config restart failed: Error: required SecretRef MISSING_RESTART_TOKEN is unavailable",
+      );
+
+      expect(harness.activateRuntimeSecrets).toHaveBeenNthCalledWith(1, harness.deferredConfig, {
+        reason: "restart-check",
+        activate: false,
+      });
+      expect(harness.activateRuntimeSecrets).toHaveBeenNthCalledWith(2, harness.invalidConfig, {
+        reason: "restart-check",
+        activate: false,
+      });
+      expect(harness.terminalPolicy.isEnabled()).toBe(false);
+      expect(harness.promoteSnapshot.mock.calls.map(([snapshot]) => snapshot.hash)).not.toContain(
+        "invalid-b",
+      );
+
+      hoisted.activeTaskBlockers.length = 0;
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
+
+      const acceptedWithLogging = {
+        ...harness.deferredConfig,
+        logging: { level: "debug" },
+      } as OpenClawConfig;
+      const revertPromotion = harness.nextPromotion();
+      harness.writeConfig(acceptedWithLogging, "accepted-a-plus-logging", 3);
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(revertPromotion).resolves.toBe("accepted-a-plus-logging");
+      expect(harness.terminalPolicy.isEnabled()).toBe(false);
+      expect(harness.activateRuntimeSecrets).toHaveBeenNthCalledWith(3, acceptedWithLogging, {
+        reason: "restart-check",
+        activate: false,
+      });
+      const deferredPlan = buildGatewayReloadPlan(
+        diffConfigPaths(harness.initialConfig, harness.deferredConfig),
+      );
+      expect(harness.requestRecoveryRestart.mock.calls).toEqual([
+        [`config reload: ${deferredPlan.restartReasons.join(", ")}`],
+      ]);
+    } finally {
+      hoisted.activeTaskBlockers.length = 0;
+      await harness.reloader.stop();
+    }
+  });
+
+  it("revalidates paused restart secrets before rearming an exact config revert", async () => {
+    vi.useFakeTimers();
+    const harness = createManagedRestartSequenceHarness();
+    hoisted.activeTaskBlockers.push({
+      taskId: "restart-sequence-blocker",
+      status: "running",
+      runtime: "subagent",
+    });
+
+    try {
+      const deferredPromotion = harness.nextPromotion();
+      harness.writeConfig(harness.deferredConfig, "deferred-a", 1);
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(deferredPromotion).resolves.toBe("deferred-a");
+
+      const replacementError = harness.nextReloadError();
+      harness.writeConfig(harness.invalidConfig, "invalid-b", 2);
+      await vi.advanceTimersByTimeAsync(0);
+      await replacementError;
+      expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
+
+      hoisted.activeTaskBlockers.length = 0;
+      await vi.advanceTimersByTimeAsync(5_000);
+      harness.setSecretUnavailable("RESTART_A_TOKEN");
+
+      const revalidationError = harness.nextReloadError();
+      harness.writeConfig(harness.deferredConfig, "unavailable-revert-a", 3);
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(revalidationError).resolves.toBe(
+        "config reload failed: Error: required SecretRef RESTART_A_TOKEN is unavailable",
+      );
+
+      expect(harness.activateRuntimeSecrets).toHaveBeenNthCalledWith(3, harness.deferredConfig, {
+        reason: "restart-check",
+        activate: false,
+      });
+      expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
+      expect(harness.promoteSnapshot.mock.calls.map(([snapshot]) => snapshot.hash)).not.toContain(
+        "unavailable-revert-a",
+      );
+      expect(harness.terminalPolicy.isEnabled()).toBe(false);
+    } finally {
+      hoisted.activeTaskBlockers.length = 0;
+      await harness.reloader.stop();
+    }
+  });
+
+  it("lets a newer valid restart config replace the deferred restart owner", async () => {
+    vi.useFakeTimers();
+    const harness = createManagedRestartSequenceHarness();
+    hoisted.activeTaskBlockers.push({
+      taskId: "restart-sequence-blocker",
+      status: "running",
+      runtime: "subagent",
+    });
+
+    try {
+      const deferredPromotion = harness.nextPromotion();
+      harness.writeConfig(harness.deferredConfig, "deferred-a", 1);
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(deferredPromotion).resolves.toBe("deferred-a");
+
+      const replacementPromotion = harness.nextPromotion();
+      harness.writeConfig(harness.replacementConfig, "replacement-b", 2);
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(replacementPromotion).resolves.toBe("replacement-b");
+      expect(harness.activateRuntimeSecrets).toHaveBeenNthCalledWith(2, harness.replacementConfig, {
+        reason: "restart-check",
+        activate: false,
+      });
+      expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
+
+      hoisted.activeTaskBlockers.length = 0;
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(harness.requestRecoveryRestart.mock.calls).toEqual([
+        ["config reload: gateway.bind", undefined],
+      ]);
+    } finally {
+      hoisted.activeTaskBlockers.length = 0;
+      await harness.reloader.stop();
     }
   });
 
