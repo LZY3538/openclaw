@@ -3,7 +3,7 @@
  */
 import { sanitizeForLog } from "../../../../packages/terminal-core/src/ansi.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
-import type { AssistantMessage } from "../../../llm/types.js";
+import type { AssistantMessage, ServerRetryAfter } from "../../../llm/types.js";
 import { extractLeadingHttpStatus } from "../../../shared/assistant-error-format.js";
 import type { AuthProfileFailureReason } from "../../auth-profiles.js";
 import {
@@ -38,7 +38,7 @@ type AssistantFailoverOutcome =
 type ShortWindowRateLimitRetry = {
   retryAfterSeconds?: number;
 };
-type RateLimitRetrySignal = Pick<AssistantMessage, "errorMessage" | "retryAfterSeconds">;
+type RateLimitRetrySignal = Pick<AssistantMessage, "errorMessage" | "retryAfter">;
 
 const LONG_WINDOW_RATE_LIMIT_RE =
   /\b(?:daily|weekly|monthly|tokens per day|requests per day|usage limit|subscription|insufficient[_ -]?quota|current quota|quota[_ -]?exceeded|quota exceeded)\b/i;
@@ -83,25 +83,26 @@ function parseRetryAfterSeconds(message: string): number | null {
   return Math.max(0, (retryAtMs - Date.now()) / 1000);
 }
 
-function readStructuredRetryAfterSeconds(message: RateLimitRetrySignal | undefined): number | null {
-  const retryAfterSeconds = message?.retryAfterSeconds;
-  return typeof retryAfterSeconds === "number" && !Number.isNaN(retryAfterSeconds)
-    ? retryAfterSeconds
-    : null;
+function readStructuredRetryAfter(
+  message: RateLimitRetrySignal | undefined,
+): ServerRetryAfter | undefined {
+  return message?.retryAfter;
 }
 
 function resolveShortWindowRateLimitRetry(
   message: RateLimitRetrySignal | undefined,
 ): ShortWindowRateLimitRetry | null {
-  const structuredRetryAfterSeconds = readStructuredRetryAfterSeconds(message);
-  if (
-    structuredRetryAfterSeconds !== null &&
-    structuredRetryAfterSeconds > MAX_SHORT_WINDOW_RETRY_AFTER_SECONDS
-  ) {
-    return null;
-  }
-  if (structuredRetryAfterSeconds !== null && structuredRetryAfterSeconds >= 0) {
-    return { retryAfterSeconds: structuredRetryAfterSeconds };
+  const structured = readStructuredRetryAfter(message);
+  if (structured) {
+    // An over-limit (unbounded) cooldown is never a short-window same-model
+    // retry; fall through to profile rotation / escalation.
+    if (structured.kind === "unbounded") {
+      return null;
+    }
+    if (structured.seconds > MAX_SHORT_WINDOW_RETRY_AFTER_SECONDS) {
+      return null;
+    }
+    return { retryAfterSeconds: structured.seconds };
   }
 
   const raw = message?.errorMessage?.trim();
@@ -191,7 +192,7 @@ export async function handleAssistantFailover(params: {
     profileId?: string;
     reason?: AuthProfileFailureReason | null;
     modelId?: string;
-    retryAfterSeconds?: number;
+    retryAfter?: ServerRetryAfter;
   }) => Promise<void>;
   maybeEscalateRateLimitProfileFallback: (params: {
     failoverProvider: string;
@@ -243,9 +244,9 @@ export async function handleAssistantFailover(params: {
           profileId: failedProfileId,
           reason: failureReason,
           modelId: params.modelId,
-          retryAfterSeconds:
+          retryAfter:
             failureReason === "rate_limit"
-              ? (readStructuredRetryAfterSeconds(params.lastAssistant) ?? undefined)
+              ? readStructuredRetryAfter(params.lastAssistant)
               : undefined,
         });
       } catch (err) {

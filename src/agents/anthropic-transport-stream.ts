@@ -58,9 +58,11 @@ import type {
   AssistantMessageDiagnostic,
   Context,
   Model,
+  ServerRetryAfter,
   SimpleStreamOptions,
   ThinkingLevel,
 } from "../llm/types.js";
+import { toServerRetryAfter } from "../llm/utils/retry.js";
 import "../llm/ai-transport-host.js";
 import { looksLikeSecretSentinel, resolveSecretSentinel } from "../secrets/sentinel.js";
 import { MALFORMED_STREAMING_FRAGMENT_ERROR_MESSAGE } from "../shared/assistant-error-format.js";
@@ -819,18 +821,18 @@ async function* parseAnthropicSseBody(
 function createAnthropicMessagesHttpError(
   response: Response,
   detail: string,
-): Error & { status: number; httpStatus: number; retryAfterSeconds?: number } {
+): Error & { status: number; httpStatus: number; retryAfter?: ServerRetryAfter } {
   const message = detail || `Anthropic Messages request failed with HTTP ${response.status}`;
   const error = new Error(message) as Error & {
     status: number;
     httpStatus: number;
-    retryAfterSeconds?: number;
+    retryAfter?: ServerRetryAfter;
   };
   error.status = response.status;
   error.httpStatus = response.status;
-  const retryAfterSeconds = parseRetryAfterSeconds(response.headers);
-  if (retryAfterSeconds !== undefined) {
-    error.retryAfterSeconds = retryAfterSeconds;
+  const retryAfter = toServerRetryAfter(parseRetryAfterSeconds(response.headers));
+  if (retryAfter !== undefined) {
+    error.retryAfter = retryAfter;
   }
   return error;
 }

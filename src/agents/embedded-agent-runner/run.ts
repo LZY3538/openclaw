@@ -238,6 +238,7 @@ import {
   shouldTreatEmptyAssistantReplyAsSilent,
 } from "./run/incomplete-turn.js";
 import type { RunEmbeddedAgentParams } from "./run/params.js";
+import type { ServerRetryAfter } from "../../llm/types.js";
 import { buildEmbeddedRunPayloads } from "./run/payloads.js";
 import { handleRetryLimitExhaustion } from "./run/retry-limit.js";
 import {
@@ -1827,7 +1828,7 @@ async function runEmbeddedAgentInternal(
         config?: RunEmbeddedAgentParams["config"];
         agentDir?: RunEmbeddedAgentParams["agentDir"];
         modelId?: string;
-        retryAfterSeconds?: number;
+        retryAfter?: ServerRetryAfter;
       }) => {
         const { profileId, reason } = failure;
         if (!profileId || !reason) {
@@ -1846,7 +1847,7 @@ async function runEmbeddedAgentInternal(
           agentDir,
           runId: params.runId,
           modelId: failure.modelId,
-          retryAfterSeconds: failure.retryAfterSeconds,
+          retryAfter: failure.retryAfter,
         });
       };
       const markAuthProfileSuccessAfterRun = () => {

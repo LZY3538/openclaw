@@ -2676,7 +2676,7 @@ export class AgentSession {
       attempt: this.retryCount,
       baseDelayMs: settings.baseDelayMs,
       maxRetryDelayMs: this.settingsManager.getProviderRetrySettings().maxRetryDelayMs,
-      retryAfterSeconds: message.retryAfterSeconds,
+      retryAfter: message.retryAfter,
     });
 
     if (delayMs === null) {
