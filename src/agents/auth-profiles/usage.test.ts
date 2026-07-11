@@ -1349,6 +1349,7 @@ describe("markAuthProfileFailure — per-model cooldown metadata", () => {
     store: ReturnType<typeof makeStoreWithCopilot>;
     now: number;
     modelId?: string;
+    retryAfterSeconds?: number;
   }): Promise<void> {
     vi.useFakeTimers();
     vi.setSystemTime(params.now);
@@ -1359,6 +1360,7 @@ describe("markAuthProfileFailure — per-model cooldown metadata", () => {
         profileId: "github-copilot:github",
         reason: "rate_limit",
         modelId: params.modelId,
+        retryAfterSeconds: params.retryAfterSeconds,
       });
     } finally {
       vi.useRealTimers();
@@ -1370,6 +1372,21 @@ describe("markAuthProfileFailure — per-model cooldown metadata", () => {
     const store = makeStoreWithCopilot({});
     await markFailure({ store, now, modelId: "claude-sonnet-4.6" });
     const stats = store.usageStats?.["github-copilot:github"];
+    expect(stats?.cooldownReason).toBe("rate_limit");
+    expect(stats?.cooldownModel).toBe("claude-sonnet-4.6");
+  });
+
+  it("uses server Retry-After when it exceeds the first rate_limit cooldown", async () => {
+    const now = 1_000_000;
+    const store = makeStoreWithCopilot({});
+    await markFailure({
+      store,
+      now,
+      modelId: "claude-sonnet-4.6",
+      retryAfterSeconds: 120,
+    });
+    const stats = store.usageStats?.["github-copilot:github"];
+    expect(stats?.cooldownUntil).toBe(now + 120_000);
     expect(stats?.cooldownReason).toBe("rate_limit");
     expect(stats?.cooldownModel).toBe("claude-sonnet-4.6");
   });

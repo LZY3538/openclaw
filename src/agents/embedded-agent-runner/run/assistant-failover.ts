@@ -191,6 +191,7 @@ export async function handleAssistantFailover(params: {
     profileId?: string;
     reason?: AuthProfileFailureReason | null;
     modelId?: string;
+    retryAfterSeconds?: number;
   }) => Promise<void>;
   maybeEscalateRateLimitProfileFallback: (params: {
     failoverProvider: string;
@@ -242,6 +243,10 @@ export async function handleAssistantFailover(params: {
           profileId: failedProfileId,
           reason: failureReason,
           modelId: params.modelId,
+          retryAfterSeconds:
+            failureReason === "rate_limit"
+              ? (readStructuredRetryAfterSeconds(params.lastAssistant) ?? undefined)
+              : undefined,
         });
       } catch (err) {
         params.warn(`profile failure mark failed: ${String(err)}`);

@@ -454,6 +454,42 @@ describe("handleAssistantFailover", () => {
       expect(advanceAuthProfile).toHaveBeenCalledTimes(1);
     });
 
+    it("passes over-limit structured Retry-After into auth profile failure marking", async () => {
+      const maybeMarkAuthProfileFailure = vi.fn(async () => {});
+      const maybeRetrySameModelRateLimit = vi.fn(async () => true);
+      const maybeEscalateRateLimitProfileFallback = vi.fn();
+      const advanceAuthProfile = vi.fn(async () => true);
+
+      const outcome = await handleAssistantFailover(
+        makeParams({
+          initialDecision: { action: "rotate_profile", reason: "rate_limit" },
+          failoverReason: "rate_limit",
+          assistantProfileFailureReason: "rate_limit",
+          billingFailure: false,
+          rateLimitFailure: true,
+          lastProfileId: "anthropic:default",
+          lastAssistant: {
+            errorMessage: "Anthropic Messages request failed with HTTP 429",
+            retryAfterSeconds: 120,
+          } as Params["lastAssistant"],
+          maybeMarkAuthProfileFailure,
+          maybeRetrySameModelRateLimit,
+          maybeEscalateRateLimitProfileFallback,
+          advanceAuthProfile,
+        }),
+      );
+
+      expect(outcome.action).toBe("retry");
+      expect(maybeRetrySameModelRateLimit).not.toHaveBeenCalled();
+      expect(maybeEscalateRateLimitProfileFallback).toHaveBeenCalledTimes(1);
+      expect(maybeMarkAuthProfileFailure).toHaveBeenCalledWith({
+        profileId: "anthropic:default",
+        reason: "rate_limit",
+        modelId: "claude-haiku-4-5-20251001",
+        retryAfterSeconds: 120,
+      });
+    });
+
     it("allows RESOURCE_EXHAUSTED messages with short-window 429 hints", async () => {
       const maybeRetrySameModelRateLimit = vi.fn(async () => true);
       const maybeEscalateRateLimitProfileFallback = vi.fn();

@@ -6,6 +6,7 @@
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import {
   asDateTimestampMs,
+  finiteSecondsToTimerSafeMilliseconds,
   isFutureDateTimestampMs,
   positiveSecondsToSafeMilliseconds,
   resolveExpiresAtMsFromDurationMs,
@@ -613,12 +614,25 @@ function keepActiveWindowOrRecompute(params: {
   return hasActiveWindow ? existingUntil : recomputedUntil;
 }
 
+function resolveRateLimitRetryAfterCooldownUntil(params: {
+  reason: AuthProfileFailureReason;
+  retryAfterSeconds?: number;
+  now: number;
+}): number | undefined {
+  if (params.reason !== "rate_limit") {
+    return undefined;
+  }
+  const retryAfterMs = finiteSecondsToTimerSafeMilliseconds(params.retryAfterSeconds);
+  return retryAfterMs === undefined ? undefined : resolveUsageWindowUntil(params.now, retryAfterMs);
+}
+
 function computeNextProfileUsageStats(params: {
   existing: ProfileUsageStats;
   now: number;
   reason: AuthProfileFailureReason;
   cfgResolved: ResolvedAuthCooldownConfig;
   modelId?: string;
+  retryAfterSeconds?: number;
 }): ProfileUsageStats {
   const windowMs = params.cfgResolved.failureWindowMs;
   const windowExpired =
@@ -668,13 +682,22 @@ function computeNextProfileUsageStats(params: {
     updatedStats.disabledReason = disabledFailureReason;
   } else {
     const backoffMs = calculateAuthProfileCooldownMs(nextErrorCount);
+    const retryAfterUntil = resolveRateLimitRetryAfterCooldownUntil({
+      reason: params.reason,
+      retryAfterSeconds: params.retryAfterSeconds,
+      now: params.now,
+    });
     // Keep active cooldown windows immutable so retries within the window
-    // cannot push recovery further out.
+    // cannot push recovery further out. Provider Retry-After is an explicit
+    // server window, so preserve it when it is longer than the local backoff.
     updatedStats.cooldownUntil = keepActiveWindowOrRecompute({
       existingUntil: params.existing.cooldownUntil,
       now: params.now,
       recomputedUntil: resolveUsageWindowUntil(params.now, backoffMs),
     });
+    if (retryAfterUntil !== undefined) {
+      updatedStats.cooldownUntil = Math.max(updatedStats.cooldownUntil, retryAfterUntil);
+    }
     // Update cooldown metadata based on whether the window is still active
     // and whether the same or a different model is failing.
     const existingCooldownActive =
@@ -733,8 +756,9 @@ export async function markAuthProfileFailure(params: {
   agentDir?: string;
   runId?: string;
   modelId?: string;
+  retryAfterSeconds?: number;
 }): Promise<void> {
-  const { store, profileId, reason, agentDir, cfg, runId, modelId } = params;
+  const { store, profileId, reason, agentDir, cfg, runId, modelId, retryAfterSeconds } = params;
   const profile = store.profiles[profileId];
   if (!profile || isAuthCooldownBypassedForProvider(profile.provider)) {
     return;
@@ -785,6 +809,7 @@ export async function markAuthProfileFailure(params: {
         reason,
         cfgResolved,
         modelId,
+        retryAfterSeconds,
       });
       nextStats = currentWhamResult
         ? applyWhamCooldownResult({

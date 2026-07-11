@@ -1827,6 +1827,7 @@ async function runEmbeddedAgentInternal(
         config?: RunEmbeddedAgentParams["config"];
         agentDir?: RunEmbeddedAgentParams["agentDir"];
         modelId?: string;
+        retryAfterSeconds?: number;
       }) => {
         const { profileId, reason } = failure;
         if (!profileId || !reason) {
@@ -1845,6 +1846,7 @@ async function runEmbeddedAgentInternal(
           agentDir,
           runId: params.runId,
           modelId: failure.modelId,
+          retryAfterSeconds: failure.retryAfterSeconds,
         });
       };
       const markAuthProfileSuccessAfterRun = () => {

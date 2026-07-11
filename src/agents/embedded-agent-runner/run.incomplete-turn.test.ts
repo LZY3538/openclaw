@@ -811,6 +811,14 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     await expect(promise).rejects.toBeInstanceOf(MockedFailoverError);
     await expect(promise).rejects.toThrow("Anthropic rate limit");
     expect(mockedSleepWithAbort).not.toHaveBeenCalled();
+    expect(mockedMarkAuthProfileFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profileId: "test-profile",
+        reason: "rate_limit",
+        modelId: "claude-haiku-4-5-20251001",
+        retryAfterSeconds: 120,
+      }),
+    );
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
   });
 
