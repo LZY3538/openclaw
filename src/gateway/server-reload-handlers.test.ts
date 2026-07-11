@@ -408,6 +408,27 @@ function createManagedRestartSequenceHarness() {
       terminal: { enabled: false },
     },
   } as OpenClawConfig;
+  const missingHotSecret = {
+    source: "env" as const,
+    provider: "default",
+    id: "MISSING_HOT_TOKEN",
+  };
+  const invalidHotConfig = {
+    ...deferredConfig,
+    models: {
+      providers: {
+        test: { apiKey: missingHotSecret },
+      },
+    },
+  } as OpenClawConfig;
+  const invalidNoopConfig = {
+    ...deferredConfig,
+    tools: {
+      web: {
+        search: { apiKey: missingHotSecret },
+      },
+    },
+  } as OpenClawConfig;
   const replacementConfig = {
     gateway: {
       ...deferredConfig.gateway,
@@ -420,7 +441,7 @@ function createManagedRestartSequenceHarness() {
   };
   let snapshotConfig = initialConfig;
   let snapshotHash = "initial";
-  const unavailableSecretIds = new Set(["MISSING_RESTART_TOKEN"]);
+  const unavailableSecretIds = new Set(["MISSING_RESTART_TOKEN", "MISSING_HOT_TOKEN"]);
   let recordPromotion: ((hash: string) => void) | undefined;
   let recordReloadError: ((message: string) => void) | undefined;
   const nextPromotion = () =>
@@ -445,14 +466,20 @@ function createManagedRestartSequenceHarness() {
     }),
   };
   const activateRuntimeSecrets = vi.fn(async (config: OpenClawConfig) => {
-    const token = config.gateway?.auth?.token;
-    if (
-      typeof token === "object" &&
-      token !== null &&
-      "id" in token &&
-      unavailableSecretIds.has(token.id)
-    ) {
-      throw new Error(`required SecretRef ${token.id} is unavailable`);
+    const secretInputs = [
+      config.gateway?.auth?.token,
+      config.models?.providers?.test?.apiKey,
+      config.tools?.web?.search?.apiKey,
+    ];
+    for (const secretInput of secretInputs) {
+      if (
+        typeof secretInput === "object" &&
+        secretInput !== null &&
+        "id" in secretInput &&
+        unavailableSecretIds.has(secretInput.id)
+      ) {
+        throw new Error(`required SecretRef ${secretInput.id} is unavailable`);
+      }
     }
     return {
       sourceConfig: config,
@@ -534,7 +561,12 @@ function createManagedRestartSequenceHarness() {
     acceptTerminalConfig: terminalPolicy.acceptConfig,
     requestRecoveryRestart,
   });
-  const writeConfig = (config: OpenClawConfig, hash: string, revision: number) => {
+  const writeConfig = (
+    config: OpenClawConfig,
+    hash: string,
+    revision: number,
+    runtimeConfig: OpenClawConfig = config,
+  ) => {
     const listener = writeListenerRef.current;
     if (!listener) {
       throw new Error("Expected config write listener to be registered");
@@ -544,7 +576,7 @@ function createManagedRestartSequenceHarness() {
     listener({
       configPath: "/tmp/openclaw.json",
       sourceConfig: config,
-      runtimeConfig: config,
+      runtimeConfig,
       persistedHash: hash,
       revision,
       fingerprint: `runtime-${hash}`,
@@ -558,6 +590,8 @@ function createManagedRestartSequenceHarness() {
     deferredConfig,
     initialConfig,
     invalidConfig,
+    invalidHotConfig,
+    invalidNoopConfig,
     logReload,
     nextPromotion,
     nextReloadError,
@@ -566,6 +600,7 @@ function createManagedRestartSequenceHarness() {
     replacementConfig,
     requestRecoveryRestart,
     terminalPolicy,
+    setSecretAvailable: (id: string) => unavailableSecretIds.delete(id),
     setSecretUnavailable: (id: string) => unavailableSecretIds.add(id),
     writeConfig,
   };
@@ -1194,6 +1229,49 @@ describe("gateway hot reload model state", () => {
 });
 
 describe("gateway hot reload superseded tail recovery", () => {
+  it("rearms detached stale-tail recovery against an already accepted config", async () => {
+    vi.useFakeTimers();
+    const requestRecoveryRestart = vi.fn(() => ({ status: "emitted" as const }));
+    const prepareRuntimeConfig = vi.fn(async () => ({ logging: { level: "debug" } }));
+    const handlers = createReloadHandlersForTest(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      requestRecoveryRestart,
+    );
+    handlers.recordAcceptedRestartTarget({
+      runtimeConfig: { logging: { level: "debug" } },
+      sourceConfig: { logging: { level: "debug" } },
+      prepareRuntimeConfig,
+    });
+    hoisted.refreshContextWindowCache.mockRejectedValueOnce(new Error("detached tail failed"));
+    const plan = createHotTailPlan({
+      changedPaths: ["agents.defaults.workspace"],
+      hotReasons: ["agents.defaults.workspace"],
+    });
+
+    try {
+      await handlers.applyHotReload(
+        plan,
+        { agents: { defaults: { workspace: "/tmp/a" } } },
+        {
+          isCurrent: () => false,
+          publish: async (commit) => await commit(),
+        },
+      );
+      await vi.runAllTimersAsync();
+
+      expect(prepareRuntimeConfig).toHaveBeenCalledOnce();
+      expect(requestRecoveryRestart).toHaveBeenCalledWith(
+        "config reload: hot reload recovery: context window cache reload",
+        undefined,
+      );
+    } finally {
+      handlers.stopRestartRetries();
+    }
+  });
+
   it.each(["mcp", "gmail", "channel", "context"] as const)(
     "does not restart into invalid config B after revocation during the $surface tail",
     async (surface) => {
@@ -1521,6 +1599,66 @@ describe("gateway restart deferral preflight", () => {
       expect(retireRejectedRestartRequest()).toBe(true);
       await vi.advanceTimersByTimeAsync(1_000);
       expect(requestRecoveryRestart).toHaveBeenCalledTimes(2);
+    } finally {
+      stopRestartRetries();
+    }
+  });
+
+  it("preserves rejected immediate writer-restart debt across an unrelated accepted config", () => {
+    const requestRecoveryRestart = vi
+      .fn<NonNullable<ReloadHandlerParams["requestRecoveryRestart"]>>()
+      .mockReturnValueOnce({ status: "failed" })
+      .mockReturnValueOnce({ status: "emitted" });
+    const { acceptRestartConfig, requestGatewayRestart, stopRestartRetries } =
+      createReloadHandlersForTest(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        requestRecoveryRestart,
+      );
+    const configA = {
+      hooks: { enabled: true, token: "test-token", path: "/a" },
+    } as OpenClawConfig;
+    const configB = {
+      ...configA,
+      logging: { level: "debug" },
+    } as OpenClawConfig;
+    const forcedRestartPlan = {
+      changedPaths: ["hooks.path"],
+      restartGateway: true,
+      restartReasons: ["writer requires restart"],
+      hotReasons: ["hooks.path"],
+      reloadHooks: true,
+      restartGmailWatcher: false,
+      restartCron: false,
+      restartHeartbeat: false,
+      restartHealthMonitor: false,
+      reloadPlugins: false,
+      restartChannels: new Set<ChannelKind>(),
+      disposeMcpRuntimes: false,
+      noopPaths: [],
+    } satisfies GatewayReloadPlan;
+
+    try {
+      const rejected = requestGatewayRestart(forcedRestartPlan, configA);
+      expect(rejected.status).toBe("recovery-pending");
+      rejected.settle("rejected");
+
+      const accepted = acceptRestartConfig(configB);
+      expect(accepted.debt).toBeDefined();
+      if (!accepted.debt) {
+        throw new Error("Expected rejected writer restart debt");
+      }
+      const rearmed = requestGatewayRestart(accepted.debt.plan, configB, {
+        retainDebtAcrossConfigChanges: accepted.debt.retainDebtAcrossConfigChanges,
+      });
+      rearmed.settle("committed");
+
+      expect(requestRecoveryRestart).toHaveBeenCalledTimes(2);
+      expect(requestRecoveryRestart.mock.calls[1]?.[0]).toBe(
+        "config reload: writer requires restart",
+      );
     } finally {
       stopRestartRetries();
     }
@@ -3227,6 +3365,141 @@ describe("gateway Gmail hot reload handlers", () => {
       expect(harness.requestRecoveryRestart.mock.calls).toEqual([
         [`config reload: ${deferredPlan.restartReasons.join(", ")}`],
       ]);
+    } finally {
+      hoisted.activeTaskBlockers.length = 0;
+      await harness.reloader.stop();
+    }
+  });
+
+  it.each([
+    [
+      "hot",
+      (harness: ReturnType<typeof createManagedRestartSequenceHarness>) => harness.invalidHotConfig,
+    ],
+    [
+      "noop",
+      (harness: ReturnType<typeof createManagedRestartSequenceHarness>) =>
+        harness.invalidNoopConfig,
+    ],
+  ] as const)(
+    "pauses deferred restart A before external %s config B fails required SecretRef preflight",
+    async (_kind, selectInvalidConfig) => {
+      vi.useFakeTimers();
+      const harness = createManagedRestartSequenceHarness();
+      const invalidConfig = selectInvalidConfig(harness);
+      const invalidPlan = buildGatewayReloadPlan(
+        diffConfigPaths(harness.deferredConfig, invalidConfig),
+      );
+      expect(invalidPlan.restartGateway).toBe(false);
+      hoisted.activeTaskBlockers.push({
+        taskId: "hot-noop-secret-blocker",
+        status: "running",
+        runtime: "subagent",
+      });
+
+      try {
+        const deferredPromotion = harness.nextPromotion();
+        harness.writeConfig(harness.deferredConfig, "deferred-hot-noop-a", 1);
+        await vi.advanceTimersByTimeAsync(0);
+        await deferredPromotion;
+
+        const reloadError = harness.nextReloadError();
+        harness.writeConfig(invalidConfig, `invalid-${_kind}-b`, 2);
+        await vi.advanceTimersByTimeAsync(0);
+        await expect(reloadError).resolves.toBe(
+          "config reload failed: Error: required SecretRef MISSING_HOT_TOKEN is unavailable",
+        );
+
+        hoisted.activeTaskBlockers.length = 0;
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
+
+        const acceptedConfig = {
+          ...harness.deferredConfig,
+          logging: { level: "debug" },
+        } as OpenClawConfig;
+        const acceptedPromotion = harness.nextPromotion();
+        harness.writeConfig(acceptedConfig, `accepted-after-${_kind}`, 3);
+        await vi.advanceTimersByTimeAsync(0);
+        await acceptedPromotion;
+
+        expect(harness.requestRecoveryRestart).toHaveBeenCalledOnce();
+      } finally {
+        hoisted.activeTaskBlockers.length = 0;
+        await harness.reloader.stop();
+      }
+    },
+  );
+
+  it("revalidates canonical SecretRefs instead of trusting direct-write runtime literals", async () => {
+    vi.useFakeTimers();
+    const harness = createManagedRestartSequenceHarness();
+    const resolvedRuntimeConfig = {
+      ...harness.deferredConfig,
+      logging: { level: "info" },
+      gateway: {
+        ...harness.deferredConfig.gateway,
+        auth: { mode: "token" as const, token: "resolved-restart-token" },
+      },
+    } as OpenClawConfig;
+    harness.setSecretUnavailable("RESTART_A_TOKEN");
+
+    try {
+      const reloadError = harness.nextReloadError();
+      harness.writeConfig(
+        harness.deferredConfig,
+        "direct-runtime-literal",
+        1,
+        resolvedRuntimeConfig,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      await expect(reloadError).resolves.toBe(
+        "config restart failed: Error: required SecretRef RESTART_A_TOKEN is unavailable",
+      );
+      expect(harness.activateRuntimeSecrets).toHaveBeenCalledWith(
+        {
+          ...resolvedRuntimeConfig,
+          gateway: harness.deferredConfig.gateway,
+        },
+        {
+          reason: "restart-check",
+          activate: false,
+        },
+      );
+      expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
+    } finally {
+      await harness.reloader.stop();
+    }
+  });
+
+  it("revalidates deferred restart SecretRefs again before emission and retry", async () => {
+    vi.useFakeTimers();
+    const harness = createManagedRestartSequenceHarness();
+    hoisted.activeTaskBlockers.push({
+      taskId: "restart-emission-preflight-blocker",
+      status: "running",
+      runtime: "subagent",
+    });
+
+    try {
+      const promotion = harness.nextPromotion();
+      harness.writeConfig(harness.deferredConfig, "deferred-emission-preflight", 1);
+      await vi.advanceTimersByTimeAsync(0);
+      await promotion;
+
+      harness.setSecretUnavailable("RESTART_A_TOKEN");
+      hoisted.activeTaskBlockers.length = 0;
+      await vi.advanceTimersByTimeAsync(500);
+      expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
+      expect(harness.logReload.warn).toHaveBeenCalledWith(
+        expect.stringContaining("gateway restart secrets preflight failed"),
+      );
+
+      harness.setSecretAvailable("RESTART_A_TOKEN");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(harness.requestRecoveryRestart).toHaveBeenCalledOnce();
+      expect(harness.activateRuntimeSecrets).toHaveBeenCalledTimes(3);
     } finally {
       hoisted.activeTaskBlockers.length = 0;
       await harness.reloader.stop();
