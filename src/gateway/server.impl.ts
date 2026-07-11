@@ -1927,8 +1927,10 @@ export async function startGatewayServer(
         onCronRestart: () => {
           gatewayCronStartHandled = true;
         },
-        reconcileTerminalSessions: (plan, nextConfig) => {
+        prepareTerminalConfig: (plan, nextConfig) => {
           terminalLaunchPolicy.prepareConfig(nextConfig, { restartPending: plan.restartGateway });
+        },
+        reconcileTerminalSessions: () => {
           terminalSessions.closeDisallowedAgents(
             (agentId) => terminalLaunchPolicy.resolve(agentId).ok,
           );

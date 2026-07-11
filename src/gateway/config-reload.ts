@@ -98,6 +98,10 @@ type GatewayConfigReloader = {
 
 type PluginInstallRecords = Record<string, PluginInstallRecord>;
 
+export type GatewayConfigReloadTransactionOwnership = {
+  isCurrent: () => boolean;
+};
+
 function asPluginInstallConfig(records: PluginInstallRecords): OpenClawConfig {
   return {
     plugins: {
@@ -116,9 +120,21 @@ export function startGatewayConfigReloader(opts: {
   onConfigApplied?: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => void | Promise<void>;
   /** Retires rejected lifecycle work after any newer config transaction is accepted. */
   onConfigAccepted?: (nextConfig: OpenClawConfig) => void | Promise<void>;
-  onNoopConfigCommit: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => Promise<void>;
-  onHotReload: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => Promise<void>;
-  onRestart: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => void | Promise<void>;
+  onNoopConfigCommit: (
+    plan: GatewayReloadPlan,
+    nextConfig: OpenClawConfig,
+    ownership: GatewayConfigReloadTransactionOwnership,
+  ) => Promise<void>;
+  onHotReload: (
+    plan: GatewayReloadPlan,
+    nextConfig: OpenClawConfig,
+    ownership: GatewayConfigReloadTransactionOwnership,
+  ) => Promise<void>;
+  onRestart: (
+    plan: GatewayReloadPlan,
+    nextConfig: OpenClawConfig,
+    ownership: GatewayConfigReloadTransactionOwnership,
+  ) => void | Promise<void>;
   /** Keeps one accepted config transaction inside the Gateway work fence. */
   runTransaction?: <T>(run: () => Promise<T>) => Promise<T>;
   promoteSnapshot?: (snapshot: ConfigFileSnapshot, reason: string) => Promise<boolean>;
@@ -142,11 +158,13 @@ export function startGatewayConfigReloader(opts: {
   const activeReloads = new Set<Promise<void>>();
   let restartQueued = false;
   let missingConfigRetries = 0;
+  let configWriteEpoch = 0;
   let pendingInProcessConfig: {
     config: OpenClawConfig;
     compareConfig: OpenClawConfig;
     persistedHash: string;
     afterWrite?: ConfigWriteNotification["afterWrite"];
+    epoch: number;
   } | null = null;
   let lastAppliedWriteHash = opts.initialInternalWriteHash ?? null;
   let currentPluginInstallRecords =
@@ -170,7 +188,11 @@ export function startGatewayConfigReloader(opts: {
   const schedule = () => {
     scheduleAfter(settings.debounceMs);
   };
-  const queueRestart = async (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => {
+  const queueRestart = async (
+    plan: GatewayReloadPlan,
+    nextConfig: OpenClawConfig,
+    ownership: GatewayConfigReloadTransactionOwnership,
+  ) => {
     if (restartQueued) {
       return;
     }
@@ -178,7 +200,7 @@ export function startGatewayConfigReloader(opts: {
     try {
       // Restart preparation reads secrets and can mutate auth/runtime state.
       // Keep it inside the accepted config transaction instead of detaching it.
-      await opts.onRestart(plan, nextConfig);
+      await opts.onRestart(plan, nextConfig, ownership);
     } catch (err) {
       restartQueued = false;
       opts.log.error(`config restart failed: ${String(err)}`);
@@ -218,7 +240,11 @@ export function startGatewayConfigReloader(opts: {
     nextConfig: OpenClawConfig,
     nextCompareConfig: OpenClawConfig,
     afterWrite?: ConfigWriteNotification["afterWrite"],
+    transactionEpoch = configWriteEpoch,
   ) => {
+    const ownership: GatewayConfigReloadTransactionOwnership = {
+      isCurrent: () => configWriteEpoch === transactionEpoch,
+    };
     const configChangedPaths = diffConfigPaths(currentCompareConfig, nextCompareConfig);
     const configPluginInstallTimestampNoopPaths = listPluginInstallTimestampMetadataPaths(
       currentCompareConfig,
@@ -300,7 +326,7 @@ export function startGatewayConfigReloader(opts: {
       await opts.onConfigChange?.(plan, nextConfig);
       // No-op plans still change the runtime config snapshot. Commit before
       // marking applied so getRuntimeConfig() readers do not stay stale until restart.
-      await opts.onNoopConfigCommit(plan, nextConfig);
+      await opts.onNoopConfigCommit(plan, nextConfig, ownership);
       await opts.onConfigApplied?.(plan, nextConfig);
       await commitReloadBaseline();
       return;
@@ -312,13 +338,14 @@ export function startGatewayConfigReloader(opts: {
         restartReasons: [...plan.restartReasons, followUp.reason],
       };
       await opts.onConfigChange?.(restartPlan, nextConfig);
-      await queueRestart(restartPlan, nextConfig);
+      await queueRestart(restartPlan, nextConfig, ownership);
       await commitReloadBaseline();
       return;
     }
     if (nextSettings.mode === "restart") {
-      await opts.onConfigChange?.({ ...plan, restartGateway: true }, nextConfig);
-      await queueRestart(plan, nextConfig);
+      const restartPlan = { ...plan, restartGateway: true };
+      await opts.onConfigChange?.(restartPlan, nextConfig);
+      await queueRestart(restartPlan, nextConfig, ownership);
       await commitReloadBaseline();
       return;
     }
@@ -333,13 +360,13 @@ export function startGatewayConfigReloader(opts: {
         return;
       }
       await opts.onConfigChange?.(plan, nextConfig);
-      await queueRestart(plan, nextConfig);
+      await queueRestart(plan, nextConfig, ownership);
       await commitReloadBaseline();
       return;
     }
 
     await opts.onConfigChange?.(plan, nextConfig);
-    await opts.onHotReload(plan, nextConfig);
+    await opts.onHotReload(plan, nextConfig, ownership);
     await opts.onConfigApplied?.(plan, nextConfig);
     await commitReloadBaseline();
   };
@@ -402,6 +429,7 @@ export function startGatewayConfigReloader(opts: {
               pendingWrite.config,
               pendingWrite.compareConfig,
               pendingWrite.afterWrite,
+              pendingWrite.epoch,
             );
             await promoteAcceptedInProcessWrite(pendingWrite.persistedHash);
           });
@@ -413,6 +441,7 @@ export function startGatewayConfigReloader(opts: {
         }
         return;
       }
+      const transactionEpoch = configWriteEpoch;
       const snapshot = await opts.readSnapshot();
       if (lastAppliedWriteHash && typeof snapshot.hash === "string") {
         if (snapshot.hash === lastAppliedWriteHash) {
@@ -428,7 +457,7 @@ export function startGatewayConfigReloader(opts: {
         return;
       }
       await runAcceptedTransaction(async () => {
-        await applySnapshot(snapshot.config, snapshot.sourceConfig);
+        await applySnapshot(snapshot.config, snapshot.sourceConfig, undefined, transactionEpoch);
         await promoteAcceptedSnapshot(snapshot, "valid-config");
       });
     } catch (err) {
@@ -462,11 +491,13 @@ export function startGatewayConfigReloader(opts: {
       if (event.configPath !== opts.watchPath) {
         return;
       }
+      configWriteEpoch += 1;
       pendingInProcessConfig = {
         config: event.runtimeConfig,
         compareConfig: event.sourceConfig,
         persistedHash: event.persistedHash,
         afterWrite: event.afterWrite,
+        epoch: configWriteEpoch,
       };
       lastAppliedWriteHash = event.persistedHash;
       scheduleAfter(0);

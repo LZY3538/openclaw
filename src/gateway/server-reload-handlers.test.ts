@@ -77,13 +77,15 @@ function createGatewayReloadHandlers(
 }
 
 function startManagedGatewayConfigReloader(
-  params: Omit<ManagedReloaderParams, "cronReconciliation"> & {
+  params: Omit<ManagedReloaderParams, "cronReconciliation" | "prepareTerminalConfig"> & {
     cronReconciliation?: ManagedReloaderParams["cronReconciliation"];
+    prepareTerminalConfig?: ManagedReloaderParams["prepareTerminalConfig"];
   },
 ) {
   return startManagedGatewayConfigReloaderImpl({
     ...params,
     cronReconciliation: params.cronReconciliation ?? createTestCronReconciliation(),
+    prepareTerminalConfig: params.prepareTerminalConfig ?? vi.fn(),
     requestRecoveryRestart:
       params.requestRecoveryRestart ?? requestGatewayRestartWithSignalAdmission,
   });
@@ -391,6 +393,184 @@ afterEach(() => {
   hoisted.disposeAllSessionMcpRuntimes.mockResolvedValue(undefined);
   hoisted.buildGatewayCronService.mockClear();
   clearSecretsRuntimeSnapshot();
+});
+
+async function runManagedOwnershipScenario(params: {
+  kind: "noop" | "hot" | "restart";
+  queueRevert: boolean;
+}) {
+  const initialConfig = {
+    gateway: { reload: { mode: "off" as const, debounceMs: 0 } },
+    hooks: { enabled: true, token: "test-token", path: "/old" },
+  } satisfies OpenClawConfig;
+  const configA = {
+    gateway: {
+      reload: {
+        mode: params.kind === "restart" ? ("restart" as const) : ("hot" as const),
+        debounceMs: 0,
+      },
+    },
+    hooks: {
+      enabled: true,
+      token: "test-token",
+      path: params.kind === "noop" ? "/old" : "/a",
+    },
+  } satisfies OpenClawConfig;
+  const configB = structuredClone(initialConfig);
+  const snapshot = (config: OpenClawConfig): PreparedSecretsRuntimeSnapshot => ({
+    sourceConfig: config,
+    config,
+    authStores: [],
+    warnings: [],
+    webTools: createEmptyRuntimeWebToolsMetadata(),
+  });
+  const writeListenerRef: { current: ((event: ConfigWriteNotification) => void) | null } = {
+    current: null,
+  };
+  let resolveAccepted: (() => void) | undefined;
+  const accepted = new Promise<void>((resolve) => {
+    resolveAccepted = resolve;
+  });
+  const acceptTerminalConfig = vi.fn(() => resolveAccepted?.());
+  const commitTerminalConfig = vi.fn();
+  const prepareTerminalConfig = vi.fn();
+  const reconcileTerminalSessions = vi.fn();
+  const requestRecoveryRestart = vi.fn(() => ({ status: "emitted" as const }));
+  let queuedB = false;
+  const activateRuntimeSecrets = vi.fn(async (config: OpenClawConfig) => {
+    if (params.queueRevert && !queuedB) {
+      queuedB = true;
+      activateSecretsRuntimeSnapshot(snapshot(configB));
+      writeListenerRef.current?.({
+        configPath: "/tmp/openclaw.json",
+        sourceConfig: configB,
+        runtimeConfig: configB,
+        persistedHash: "hash-b",
+        revision: 2,
+        fingerprint: "runtime-b",
+        sourceFingerprint: "source-b",
+        writtenAtMs: Date.now(),
+      });
+    }
+    return snapshot(config);
+  });
+  activateSecretsRuntimeSnapshot(snapshot(configA));
+  const reloader = startManagedGatewayConfigReloader({
+    minimalTestGateway: false,
+    initialConfig,
+    initialCompareConfig: initialConfig,
+    initialInternalWriteHash: null,
+    watchPath: "/tmp/openclaw.json",
+    readSnapshot: vi.fn(async () => ({
+      path: "/tmp/openclaw.json",
+      exists: true,
+      raw: "{}",
+      parsed: {},
+      sourceConfig: configB,
+      resolved: configB,
+      valid: true,
+      runtimeConfig: configB,
+      config: configB,
+      issues: [],
+      warnings: [],
+      legacyIssues: [],
+      hash: "hash-b",
+    })) as never,
+    promoteSnapshot: vi.fn(async () => true) as never,
+    subscribeToWrites: ((listener: (event: ConfigWriteNotification) => void) => {
+      writeListenerRef.current = listener;
+      return () => {
+        writeListenerRef.current = null;
+      };
+    }) as never,
+    deps: {} as never,
+    broadcast: vi.fn(),
+    getState: () => ({
+      hooksConfig: {} as never,
+      hookClientIpConfig: {} as never,
+      heartbeatRunner: { stop: vi.fn(), updateConfig: vi.fn() } as never,
+      cronState: {
+        cron: { start: vi.fn(async () => {}), stop: vi.fn() },
+        storePath: "/tmp/cron.json",
+        cronEnabled: false,
+      } as never,
+      channelHealthMonitor: null,
+    }),
+    setState: vi.fn(),
+    startChannel: vi.fn(async () => {}),
+    stopChannel: vi.fn(async () => {}),
+    reloadPlugins: vi.fn(async () => ({
+      restartChannels: new Set<ChannelKind>(),
+      activeChannels: new Set<ChannelKind>(),
+    })),
+    logHooks: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    logChannels: { info: vi.fn(), error: vi.fn() },
+    logCron: { error: vi.fn() },
+    logReload: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    channelManager: {} as never,
+    activateRuntimeSecrets: activateRuntimeSecrets as never,
+    resolveSharedGatewaySessionGenerationForConfig: () => undefined,
+    sharedGatewaySessionGenerationState: { current: undefined, required: null },
+    clients: [],
+    prepareTerminalConfig,
+    reconcileTerminalSessions,
+    commitTerminalConfig,
+    acceptTerminalConfig,
+    requestRecoveryRestart,
+  });
+  writeListenerRef.current?.({
+    configPath: "/tmp/openclaw.json",
+    sourceConfig: configA,
+    runtimeConfig: configA,
+    persistedHash: "hash-a",
+    revision: 1,
+    fingerprint: "runtime-a",
+    sourceFingerprint: "source-a",
+    writtenAtMs: Date.now(),
+  });
+  try {
+    await accepted;
+    return {
+      acceptTerminalConfig,
+      activateRuntimeSecrets,
+      commitTerminalConfig,
+      configA,
+      configB,
+      prepareTerminalConfig,
+      reconcileTerminalSessions,
+      requestRecoveryRestart,
+    };
+  } finally {
+    await reloader.stop();
+  }
+}
+
+describe("managed reload transaction ownership", () => {
+  it("applies a current in-process hot config", async () => {
+    const result = await runManagedOwnershipScenario({ kind: "hot", queueRevert: false });
+
+    expect(result.activateRuntimeSecrets).toHaveBeenCalledOnce();
+    expect(result.commitTerminalConfig).toHaveBeenCalledOnce();
+    expect(result.acceptTerminalConfig).toHaveBeenCalledOnce();
+    expect(result.prepareTerminalConfig).toHaveBeenCalledOnce();
+    expect(result.reconcileTerminalSessions).toHaveBeenCalledOnce();
+    expect(getActiveSecretsRuntimeSnapshot()?.sourceConfig).toEqual(result.configA);
+  });
+
+  it.each(["noop", "hot", "restart"] as const)(
+    "yields stale config A when queued %s config B reverts to the old source",
+    async (kind) => {
+      const result = await runManagedOwnershipScenario({ kind, queueRevert: true });
+
+      expect(result.activateRuntimeSecrets).toHaveBeenCalledOnce();
+      expect(result.commitTerminalConfig).not.toHaveBeenCalled();
+      expect(result.acceptTerminalConfig).toHaveBeenCalledOnce();
+      expect(result.prepareTerminalConfig).toHaveBeenCalledOnce();
+      expect(result.reconcileTerminalSessions).not.toHaveBeenCalled();
+      expect(result.requestRecoveryRestart).not.toHaveBeenCalled();
+      expect(getActiveSecretsRuntimeSnapshot()?.sourceConfig).toEqual(result.configB);
+    },
+  );
 });
 
 describe("gateway hot reload model state", () => {
@@ -2343,8 +2523,9 @@ describe("gateway Gmail hot reload handlers", () => {
     expect(activateRuntimeSecrets).toHaveBeenCalledTimes(1);
     expect(activateRuntimeSecrets).toHaveBeenCalledWith(nextConfig, {
       reason: "reload",
-      activate: true,
+      activate: false,
     });
+    expect(getActiveSecretsRuntimeSnapshot()?.sourceConfig).toEqual(nextConfig);
     expect(acceptTerminalConfig).toHaveBeenCalledWith({
       retireRejectedRestart: false,
     });
@@ -2470,9 +2651,10 @@ describe("gateway Gmail hot reload handlers", () => {
       resolveSharedGatewaySessionGenerationForConfig: () => undefined,
       sharedGatewaySessionGenerationState: { current: undefined, required: null },
       clients: [],
-      reconcileTerminalSessions: (plan, nextConfig) => {
+      prepareTerminalConfig: (plan, nextConfig) => {
         terminalPolicy.prepareConfig(nextConfig, { restartPending: plan.restartGateway });
       },
+      reconcileTerminalSessions: vi.fn(),
       commitTerminalConfig: terminalPolicy.commitConfig,
       acceptTerminalConfig,
       requestRecoveryRestart,

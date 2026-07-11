@@ -157,6 +157,13 @@ class GatewayHotReloadStaleSecretsError extends Error {
   }
 }
 
+class GatewayConfigReloadSupersededError extends Error {
+  constructor() {
+    super("config reload superseded by a newer runtime config source");
+    this.name = "GatewayConfigReloadSupersededError";
+  }
+}
+
 export type GatewayPluginReloadResult = {
   restartChannels: ReadonlySet<ChannelKind>;
   activeChannels: ReadonlySet<ChannelKind>;
@@ -285,6 +292,7 @@ type ManagedGatewayConfigReloaderParams = Omit<
   resolveSharedGatewaySessionGenerationForConfig: (config: OpenClawConfig) => string | undefined;
   sharedGatewaySessionGenerationState: SharedGatewaySessionGenerationState;
   clients: Iterable<SharedGatewayAuthClient>;
+  prepareTerminalConfig: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => void;
   reconcileTerminalSessions: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => void;
   commitTerminalConfig: () => void;
   acceptTerminalConfig: (options: { retireRejectedRestart: boolean }) => void;
@@ -1150,23 +1158,56 @@ export function startManagedGatewayConfigReloader(
     readSnapshot: params.readSnapshot,
     promoteSnapshot: async (snapshot, _reason) => await params.promoteSnapshot(snapshot),
     subscribeToWrites: params.subscribeToWrites,
-    onConfigChange: (plan, nextConfig) => params.reconcileTerminalSessions(plan, nextConfig),
+    onConfigChange: params.prepareTerminalConfig,
     onConfigAccepted: () => {
       params.acceptTerminalConfig({
         retireRejectedRestart: retireRejectedRestartRequest(),
       });
     },
     onConfigApplied: () => params.commitTerminalConfig(),
-    onNoopConfigCommit: async (_plan, nextConfig) => {
-      await params.activateRuntimeSecrets(nextConfig, {
-        reason: "reload",
-        activate: true,
-      });
+    onNoopConfigCommit: async (plan, nextConfig, transactionOwnership) => {
+      for (;;) {
+        if (!transactionOwnership.isCurrent()) {
+          throw new GatewayConfigReloadSupersededError();
+        }
+        const previousSnapshotRevision = getActiveSecretsRuntimeSnapshotRevision();
+        const prepared = await params.activateRuntimeSecrets(nextConfig, {
+          reason: "reload",
+          activate: false,
+        });
+        if (!transactionOwnership.isCurrent()) {
+          throw new GatewayConfigReloadSupersededError();
+        }
+        const activateIfCurrent = params.activateRuntimeSecrets.activatePreparedSnapshotIfCurrent;
+        const publishTerminalConfig = async () => {
+          params.reconcileTerminalSessions(plan, nextConfig);
+        };
+        const activated = activateIfCurrent
+          ? await activateIfCurrent(
+              prepared,
+              previousSnapshotRevision,
+              { reason: "reload", activate: true },
+              publishTerminalConfig,
+              transactionOwnership.isCurrent,
+            )
+          : (await activateSecretsRuntimeSnapshotIfCurrent(prepared, previousSnapshotRevision, {
+                canActivate: transactionOwnership.isCurrent,
+                onActivated: () => params.reconcileTerminalSessions(plan, nextConfig),
+              }))
+            ? prepared
+            : null;
+        if (activated) {
+          return;
+        }
+      }
     },
-    onHotReload: async (plan, nextConfig) => {
+    onHotReload: async (plan, nextConfig, transactionOwnership) => {
       // A deferred channel/plugin reload can overlap secrets.reload. Retry from
       // preparation unless the same active snapshot still owns publication.
       for (;;) {
+        if (!transactionOwnership.isCurrent()) {
+          throw new GatewayConfigReloadSupersededError();
+        }
         const previousSnapshot = getActiveSecretsRuntimeSnapshot();
         const previousSnapshotRevision = getActiveSecretsRuntimeSnapshotRevision();
         const previousGenerationOwnership = captureSharedGatewaySessionGenerationOwnership(
@@ -1177,6 +1218,9 @@ export function startManagedGatewayConfigReloader(
           reason: "reload",
           activate: false,
         });
+        if (!transactionOwnership.isCurrent()) {
+          throw new GatewayConfigReloadSupersededError();
+        }
         if (getActiveSecretsRuntimeSnapshotRevision() !== previousSnapshotRevision) {
           continue;
         }
@@ -1188,6 +1232,7 @@ export function startManagedGatewayConfigReloader(
         let publishedSnapshotRevision: number | null = null;
         let publishedSharedGatewaySessionGeneration: SharedGatewaySessionGenerationOwnership | null =
           null;
+        let terminalConfigReconciled = false;
         try {
           await applyHotReload(plan, prepared.config, {
             publish: async (commit, isCommitted) => {
@@ -1200,6 +1245,10 @@ export function startManagedGatewayConfigReloader(
                   );
                 if (!publishedSharedGatewaySessionGeneration) {
                   throw new GatewayHotReloadStaleSecretsError();
+                }
+                if (!terminalConfigReconciled) {
+                  params.reconcileTerminalSessions(plan, nextConfig);
+                  terminalConfigReconciled = true;
                 }
               };
               const publishRuntime = async () => {
@@ -1277,6 +1326,7 @@ export function startManagedGatewayConfigReloader(
                   },
                   publishRuntime,
                   () =>
+                    transactionOwnership.isCurrent() &&
                     isSharedGatewaySessionGenerationOwnershipCurrent(
                       params.sharedGatewaySessionGenerationState,
                       previousGenerationOwnership,
@@ -1292,6 +1342,7 @@ export function startManagedGatewayConfigReloader(
                     previousSnapshotRevision,
                     {
                       canActivate: () =>
+                        transactionOwnership.isCurrent() &&
                         isSharedGatewaySessionGenerationOwnershipCurrent(
                           params.sharedGatewaySessionGenerationState,
                           previousGenerationOwnership,
@@ -1308,6 +1359,9 @@ export function startManagedGatewayConfigReloader(
           });
         } catch (err) {
           if (err instanceof GatewayHotReloadStaleSecretsError) {
+            if (!transactionOwnership.isCurrent()) {
+              throw new GatewayConfigReloadSupersededError();
+            }
             continue;
           }
           if (err instanceof GatewayHotReloadRecoveryError) {
@@ -1393,7 +1447,7 @@ export function startManagedGatewayConfigReloader(
         return;
       }
     },
-    onRestart: async (plan, nextConfig) => {
+    onRestart: async (plan, nextConfig, transactionOwnership) => {
       const restartLifecycle = beginGatewayRestartLifecycle();
       let preparation:
         | {
@@ -1405,6 +1459,10 @@ export function startManagedGatewayConfigReloader(
         | undefined;
       try {
         for (;;) {
+          if (!transactionOwnership.isCurrent()) {
+            throw new GatewayConfigReloadSupersededError();
+          }
+          const previousSnapshotRevision = getActiveSecretsRuntimeSnapshotRevision();
           const ownership = captureSharedGatewaySessionGenerationOwnership(
             params.sharedGatewaySessionGenerationState,
           );
@@ -1413,12 +1471,16 @@ export function startManagedGatewayConfigReloader(
             reason: "restart-check",
             activate: false,
           });
-          if (
-            !isSharedGatewaySessionGenerationOwnershipCurrent(
-              params.sharedGatewaySessionGenerationState,
-              ownership,
-            )
-          ) {
+          if (!transactionOwnership.isCurrent()) {
+            throw new GatewayConfigReloadSupersededError();
+          }
+          const snapshotChanged =
+            getActiveSecretsRuntimeSnapshotRevision() !== previousSnapshotRevision;
+          const generationChanged = !isSharedGatewaySessionGenerationOwnershipCurrent(
+            params.sharedGatewaySessionGenerationState,
+            ownership,
+          );
+          if (snapshotChanged || generationChanged) {
             continue;
           }
           preparation = {
@@ -1442,6 +1504,7 @@ export function startManagedGatewayConfigReloader(
       let restartTransaction: GatewayRestartTransactionResult | undefined;
       let requiredOwnership: SharedGatewaySessionGenerationOwnership | null = null;
       try {
+        params.reconcileTerminalSessions(plan, nextConfig);
         restartTransaction = requestGatewayRestart(plan, nextConfig);
         if (restartTransaction.status === "recovery-pending") {
           throw new GatewayHotReloadRecoveryError("config restart");
