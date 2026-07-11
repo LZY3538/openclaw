@@ -185,6 +185,27 @@ function readFiniteNonNegativeNumberProperty(value: unknown, key: string): numbe
   return Number.isFinite(numeric) && numeric >= 0 ? numeric : undefined;
 }
 
+/**
+ * Reads a non-negative number property, preserving `Infinity`. Used for a
+ * server retry-after cooldown: an overflowed/never-ending header is parsed to
+ * `Infinity`, and that over-limit signal must survive extraction so the retry
+ * resolver can reject it rather than silently falling back to a short delay.
+ * Only `NaN` and negatives are dropped.
+ */
+function readNonNegativeNumberProperty(value: unknown, key: string): number | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const raw = (value as Record<string, unknown>)[key];
+  const numeric =
+    typeof raw === "number"
+      ? raw
+      : typeof raw === "string" && raw.trim()
+        ? Number(raw)
+        : Number.NaN;
+  return !Number.isNaN(numeric) && numeric >= 0 ? numeric : undefined;
+}
+
 function readObjectProperty(value: unknown, key: string): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object") {
     return undefined;
@@ -252,7 +273,7 @@ function extractTransportErrorDetails(error: unknown): TransportErrorDetails {
     readFiniteNonNegativeNumberProperty(errorObject, "httpStatus") ??
     readFiniteNonNegativeNumberProperty(errorObject, "status") ??
     readFiniteNonNegativeNumberProperty(errorObject, "statusCode");
-  const retryAfterSeconds = readFiniteNonNegativeNumberProperty(errorObject, "retryAfterSeconds");
+  const retryAfterSeconds = readNonNegativeNumberProperty(errorObject, "retryAfterSeconds");
 
   return {
     ...(errorCode ? { errorCode } : {}),

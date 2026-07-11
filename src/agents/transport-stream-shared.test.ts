@@ -1,6 +1,7 @@
 // Transport stream shared tests cover payload sanitization, header merging, and
 // final/error stream termination helpers used by provider transports.
 import { describe, expect, it, vi } from "vitest";
+import { resolveAutoRetryDelayMs } from "../llm/utils/retry.js";
 import {
   assignTransportErrorDetails,
   failTransportStream,
@@ -39,6 +40,30 @@ describe("transport stream shared helpers", () => {
 
     expect(output.httpStatus).toBeUndefined();
     expect(output.retryAfterSeconds).toBeUndefined();
+  });
+
+  it("preserves an over-limit (Infinity) retryAfterSeconds through extraction so it can be rejected", () => {
+    // parseRetryAfterSeconds yields Infinity for an overflowed numeric header;
+    // that over-limit signal must survive so the resolver rejects it instead of
+    // falling back to the short exponential delay.
+    const output: { stopReason: string; retryAfterSeconds?: number } = { stopReason: "stop" };
+    const error = Object.assign(new Error("rate limited"), {
+      status: 429,
+      retryAfterSeconds: Number.POSITIVE_INFINITY,
+    });
+
+    assignTransportErrorDetails(output as never, error);
+
+    expect(output.retryAfterSeconds).toBe(Number.POSITIVE_INFINITY);
+    // End of chain: the resolver rejects an over-limit cooldown (stop retrying).
+    expect(
+      resolveAutoRetryDelayMs({
+        attempt: 1,
+        baseDelayMs: 2000,
+        maxRetryDelayMs: 60_000,
+        retryAfterSeconds: output.retryAfterSeconds,
+      }),
+    ).toBeNull();
   });
 
   it("sanitizes unpaired surrogate code units", () => {
