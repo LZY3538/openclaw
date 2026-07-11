@@ -8,15 +8,12 @@ import { loadAuthProfileStoreWithoutExternalProfiles } from "../agents/auth-prof
 import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.js";
 import { measureDiagnosticsTimelineSpan } from "../infra/diagnostics-timeline.js";
 import {
+  activateSecretsRuntimeSnapshotState,
   clearSecretsRuntimeSnapshot,
   getActiveSecretsRuntimeSnapshot,
   getActiveSecretsRuntimeSnapshotRevision,
 } from "../secrets/runtime-state.js";
-import {
-  activateSecretsRuntimeSnapshot,
-  type PreparedSecretsRuntimeSnapshot,
-  type SecretResolverWarning,
-} from "../secrets/runtime.js";
+import type { PreparedSecretsRuntimeSnapshot, SecretResolverWarning } from "../secrets/runtime.js";
 import { KNOWN_WEAK_GATEWAY_TOKEN_PLACEHOLDERS } from "./known-weak-gateway-secrets.js";
 import {
   createRuntimeSecretsActivator,
@@ -46,6 +43,14 @@ type GatewayStartupStateEmitterMock = ReturnType<
 >;
 
 const RESOLVED_GATEWAY_TOKEN = "resolved-gateway-token";
+
+function activateSecretsRuntimeSnapshotForTest(snapshot: PreparedSecretsRuntimeSnapshot): void {
+  activateSecretsRuntimeSnapshotState({
+    snapshot,
+    refreshContext: null,
+    refreshHandler: null,
+  });
+}
 
 function gatewayTokenConfig(config: OpenClawConfig): OpenClawConfig {
   return {
@@ -341,14 +346,14 @@ describe("gateway startup config secret preflight", () => {
     const initial = preparedSnapshot(gatewayTokenConfig({}));
     const refreshed = preparedSnapshotWithGatewayToken(initial.sourceConfig, "refreshed-token");
     const candidate = preparedSnapshotWithGatewayToken(initial.sourceConfig, "candidate-token");
-    const activateRuntimeSecretsSnapshot = vi.fn(activateSecretsRuntimeSnapshot);
+    const activateRuntimeSecretsSnapshot = vi.fn(activateSecretsRuntimeSnapshotForTest);
     const activateRuntimeSecrets = runtimeSecretsActivatorForTest({
       prepareRuntimeSecretsSnapshot: vi.fn(async ({ config }) => preparedSnapshot(config)),
       activateRuntimeSecretsSnapshot,
     });
-    activateSecretsRuntimeSnapshot(initial);
+    activateSecretsRuntimeSnapshotForTest(initial);
     const initialRevision = getActiveSecretsRuntimeSnapshotRevision();
-    activateSecretsRuntimeSnapshot(refreshed);
+    activateSecretsRuntimeSnapshotForTest(refreshed);
     const refreshedRevision = getActiveSecretsRuntimeSnapshotRevision();
 
     await expect(
@@ -374,9 +379,9 @@ describe("gateway startup config secret preflight", () => {
     const later = preparedSnapshotWithGatewayToken(initial.sourceConfig, "later-token");
     const activateRuntimeSecrets = runtimeSecretsActivatorForTest({
       prepareRuntimeSecretsSnapshot: vi.fn(async ({ config }) => preparedSnapshot(config)),
-      activateRuntimeSecretsSnapshot: vi.fn(activateSecretsRuntimeSnapshot),
+      activateRuntimeSecretsSnapshot: vi.fn(activateSecretsRuntimeSnapshotForTest),
     });
-    activateSecretsRuntimeSnapshot(initial);
+    activateSecretsRuntimeSnapshotForTest(initial);
     const initialRevision = getActiveSecretsRuntimeSnapshotRevision();
     let releasePublication: (() => void) | undefined;
     const publicationBlocked = new Promise<void>((resolve) => {
@@ -886,6 +891,10 @@ describe("gateway startup config secret preflight", () => {
     });
 
     try {
+      const {
+        clearSecretsRuntimeSnapshot: clearImportedSecretsRuntimeSnapshot,
+        getActiveSecretsRuntimeSnapshot: getImportedSecretsRuntimeSnapshot,
+      } = await import("../secrets/runtime-state.js");
       const { getRuntimeConfigSnapshotRefreshHandler } =
         await import("../config/runtime-snapshot.js");
       const result = await activateImportedStartupConfig(
@@ -901,7 +910,7 @@ describe("gateway startup config secret preflight", () => {
       expect(activateRuntimeSecretsSnapshot).not.toHaveBeenCalled();
       expect(loadAuthProfileStoreWithoutExternalProfilesMock).not.toHaveBeenCalled();
       expect(result.config.gateway?.auth?.token).toBe("startup-test-token");
-      expect(getActiveSecretsRuntimeSnapshot()?.config.gateway?.auth?.token).toBe(
+      expect(getImportedSecretsRuntimeSnapshot()?.config.gateway?.auth?.token).toBe(
         "startup-test-token",
       );
       const refreshHandler = getRuntimeConfigSnapshotRefreshHandler();
@@ -921,7 +930,7 @@ describe("gateway startup config secret preflight", () => {
         loadAuthStore?: unknown;
       }>(prepareRuntimeSecretsSnapshot);
       expect(refreshInput.loadAuthStore).toBeUndefined();
-      clearSecretsRuntimeSnapshot();
+      clearImportedSecretsRuntimeSnapshot();
     } finally {
       vi.doUnmock("../agents/auth-profiles.js");
       vi.doUnmock("../secrets/runtime.js");
