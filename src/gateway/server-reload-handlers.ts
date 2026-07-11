@@ -133,6 +133,7 @@ type GatewayGmailRestartAbortController = {
 
 type GatewayHotReloadPublication = {
   publish: (commit: () => Promise<void>, isCommitted: () => boolean) => Promise<void>;
+  isCurrent: () => boolean;
 };
 
 type GatewayRestartTransactionState = "pending" | "committed" | "rejected";
@@ -445,6 +446,7 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
     nextConfig: OpenClawConfig,
     publication?: GatewayHotReloadPublication,
   ): Promise<void> => {
+    const isTransactionCurrent = publication?.isCurrent ?? (() => true);
     const state = params.getState();
     const nextState = { ...state };
 
@@ -544,6 +546,12 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
     };
     const scheduleRecoveryRestart = (surface: string, err?: unknown) => {
       const detail = err === undefined ? "" : `: ${formatErrorMessage(err)}`;
+      if (!isTransactionCurrent()) {
+        params.logReload.warn(
+          `${surface} failed after config supersession${detail}; recovery deferred to the newer config`,
+        );
+        return;
+      }
       params.logReload.warn(`${surface} failed after config commit${detail}; restarting gateway`);
       if (recoveryRestartScheduled) {
         return;
@@ -838,8 +846,12 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
         scheduleRecoveryRestart("context window cache reload", err);
       }
     }
-    void warmCurrentProviderAuthStateOffMainThread(nextConfig).catch((err: unknown) => {
-      params.logReload.warn(`provider auth state rewarm failed: ${String(err)}`);
+    void warmCurrentProviderAuthStateOffMainThread(nextConfig, {
+      isCancelled: () => !isTransactionCurrent(),
+    }).catch((err: unknown) => {
+      if (isTransactionCurrent()) {
+        params.logReload.warn(`provider auth state rewarm failed: ${String(err)}`);
+      }
     });
 
     if (plan.hotReasons.length > 0) {
@@ -1391,6 +1403,7 @@ export function startManagedGatewayConfigReloader(
         let terminalConfigReconciled = false;
         try {
           await applyHotReload(plan, prepared.config, {
+            isCurrent: transactionOwnership.isCurrent,
             publish: async (commit, isCommitted) => {
               const claimGenerationOwnership = () => {
                 publishedSharedGatewaySessionGeneration ??=

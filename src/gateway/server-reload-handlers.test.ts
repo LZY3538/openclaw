@@ -215,8 +215,14 @@ vi.mock("../agents/model-provider-auth.js", () => ({
     hoisted.reloadEvents.push("clear-provider-auth");
     hoisted.clearCurrentProviderAuthState();
   },
-  warmCurrentProviderAuthStateOffMainThread: async (cfg: OpenClawConfig) => {
+  warmCurrentProviderAuthStateOffMainThread: async (
+    cfg: OpenClawConfig,
+    options?: { isCancelled?: () => boolean },
+  ) => {
     hoisted.reloadEvents.push("warm-provider-auth");
+    if (options?.isCancelled?.()) {
+      return;
+    }
     await hoisted.warmCurrentProviderAuthStateOffMainThread(cfg);
   },
 }));
@@ -263,6 +269,33 @@ function createCronRestartPlan(): GatewayReloadPlan {
     disposeMcpRuntimes: false,
     noopPaths: [],
   };
+}
+
+function createHotTailPlan(overrides: Partial<GatewayReloadPlan> = {}): GatewayReloadPlan {
+  return {
+    changedPaths: ["logging.level"],
+    restartGateway: false,
+    restartReasons: [],
+    hotReasons: ["logging.level"],
+    reloadHooks: false,
+    restartGmailWatcher: false,
+    restartCron: false,
+    restartHeartbeat: false,
+    restartHealthMonitor: false,
+    reloadPlugins: false,
+    restartChannels: new Set(),
+    disposeMcpRuntimes: false,
+    noopPaths: [],
+    ...overrides,
+  };
+}
+
+function createDeferredVoid() {
+  let resolve: (() => void) | undefined;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve: () => resolve?.() };
 }
 
 function createReloadHandlersForTest(
@@ -983,7 +1016,14 @@ describe("gateway hot reload model state", () => {
 
     try {
       await expect(
-        applyHotReload(createCronRestartPlan(), { cron: { enabled: true } }, { publish }),
+        applyHotReload(
+          createCronRestartPlan(),
+          { cron: { enabled: true } },
+          {
+            publish,
+            isCurrent: () => true,
+          },
+        ),
       ).resolves.toBeUndefined();
 
       expect(publish).toHaveBeenCalledOnce();
@@ -1150,6 +1190,149 @@ describe("gateway hot reload model state", () => {
     await applyHotReload(buildGatewayReloadPlan(changedPaths), nextConfig);
 
     expect(hoisted.refreshContextWindowCache).toHaveBeenCalledWith(nextConfig);
+  });
+});
+
+describe("gateway hot reload superseded tail recovery", () => {
+  it.each(["mcp", "gmail", "channel", "context"] as const)(
+    "does not restart into invalid config B after revocation during the $surface tail",
+    async (surface) => {
+      const entered = createDeferredVoid();
+      const release = createDeferredVoid();
+      const invalidConfigB = {
+        gateway: {
+          auth: {
+            mode: "token" as const,
+            token: {
+              source: "env" as const,
+              provider: "default",
+              id: "MISSING_TAIL_TOKEN",
+            },
+          },
+        },
+      } satisfies OpenClawConfig;
+      let pendingConfig: OpenClawConfig | null = null;
+      const isCurrent = () => pendingConfig === null;
+      const requestRecoveryRestart = vi.fn(() => ({ status: "emitted" as const }));
+      const startChannel = vi.fn(async () => {});
+      const stopChannel = vi.fn(async () => {
+        if (surface !== "channel") {
+          return;
+        }
+        entered.resolve();
+        await release.promise;
+        throw new Error("channel tail failed");
+      });
+      const stopPostReadySidecars = vi.fn(async () => {
+        if (surface === "mcp") {
+          throw new Error("gmail tail failed after MCP disposal");
+        }
+        if (surface !== "gmail") {
+          return;
+        }
+        entered.resolve();
+        await release.promise;
+        throw new Error("gmail tail failed");
+      });
+      if (surface === "mcp") {
+        hoisted.disposeAllSessionMcpRuntimes.mockImplementationOnce(async () => {
+          entered.resolve();
+          await release.promise;
+        });
+      }
+      if (surface === "context") {
+        hoisted.refreshContextWindowCache.mockImplementationOnce(async () => {
+          entered.resolve();
+          await release.promise;
+          throw new Error("context tail failed");
+        });
+      }
+      const logReload = { info: vi.fn(), warn: vi.fn() };
+      const handlers = createReloadHandlersForTest(
+        logReload,
+        { start: startChannel, stop: stopChannel },
+        undefined,
+        stopPostReadySidecars,
+        requestRecoveryRestart,
+      );
+      const plan = createHotTailPlan(
+        surface === "mcp"
+          ? { disposeMcpRuntimes: true, restartGmailWatcher: true }
+          : surface === "gmail"
+            ? { restartGmailWatcher: true }
+            : surface === "channel"
+              ? { restartChannels: new Set(["discord"]) }
+              : {
+                  changedPaths: ["agents.defaults.workspace"],
+                  hotReasons: ["agents.defaults.workspace"],
+                },
+      );
+      const configA = {
+        agents: { defaults: { workspace: "/tmp/a" } },
+      } as OpenClawConfig;
+      const reloadA = handlers.applyHotReload(plan, configA, {
+        isCurrent,
+        publish: async (commit) => await commit(),
+      });
+
+      await entered.promise;
+      pendingConfig = invalidConfigB;
+      release.resolve();
+      await expect(reloadA).resolves.toBeUndefined();
+
+      expect(requestRecoveryRestart).not.toHaveBeenCalled();
+      expect(logReload.warn).toHaveBeenCalledWith(
+        expect.stringContaining("recovery deferred to the newer config"),
+      );
+      expect(hoisted.warmCurrentProviderAuthStateOffMainThread).not.toHaveBeenCalled();
+
+      const configC = { logging: { level: "debug" as const } } satisfies OpenClawConfig;
+      pendingConfig = configC;
+      await handlers.applyHotReload(createHotTailPlan(), configC, {
+        isCurrent: () => pendingConfig === configC,
+        publish: async (commit) => await commit(),
+      });
+
+      expect(handlers.setState).toHaveBeenCalledTimes(2);
+      expect(hoisted.warmCurrentProviderAuthStateOffMainThread).toHaveBeenCalledTimes(1);
+      expect(requestRecoveryRestart).not.toHaveBeenCalled();
+    },
+  );
+
+  it("finishes a channel restart after config B revokes A between stop and start", async () => {
+    const stopped = createDeferredVoid();
+    const releaseStop = createDeferredVoid();
+    let current = true;
+    const requestRecoveryRestart = vi.fn(() => ({ status: "emitted" as const }));
+    const startChannel = vi.fn(async () => {});
+    const stopChannel = vi.fn(async () => {
+      stopped.resolve();
+      await releaseStop.promise;
+    });
+    const handlers = createReloadHandlersForTest(
+      undefined,
+      { start: startChannel, stop: stopChannel },
+      undefined,
+      vi.fn(),
+      requestRecoveryRestart,
+    );
+    const reloadA = handlers.applyHotReload(
+      createHotTailPlan({ restartChannels: new Set(["discord"]) }),
+      {},
+      {
+        isCurrent: () => current,
+        publish: async (commit) => await commit(),
+      },
+    );
+
+    await stopped.promise;
+    current = false;
+    releaseStop.resolve();
+    await reloadA;
+
+    expect(stopChannel).toHaveBeenCalledWith("discord", undefined, { manual: false });
+    expect(startChannel).toHaveBeenCalledWith("discord");
+    expect(requestRecoveryRestart).not.toHaveBeenCalled();
   });
 });
 
@@ -1740,6 +1923,7 @@ describe("gateway restart deferral preflight", () => {
         channels: { discord: { token: "token" } },
       },
       {
+        isCurrent: () => true,
         publish: async (commit) => {
           runtimePublished = true;
           await commit();
@@ -3628,6 +3812,7 @@ describe("gateway plugin hot reload handlers", () => {
       },
       { hooks: { enabled: true, token: "token", path: "/next" } },
       {
+        isCurrent: () => true,
         publish: async (commit) => {
           events.push("runtime:publish");
           await commit();
@@ -3694,7 +3879,7 @@ describe("gateway plugin hot reload handlers", () => {
             noopPaths: [],
           },
           { plugins: { enabled: true } },
-          { publish: async (commit) => await commit() },
+          { publish: async (commit) => await commit(), isCurrent: () => true },
         ),
       ).resolves.toBeUndefined();
 
@@ -3747,7 +3932,7 @@ describe("gateway plugin hot reload handlers", () => {
             noopPaths: [],
           },
           { plugins: { enabled: true } },
-          { publish },
+          { publish, isCurrent: () => true },
         ),
       ).resolves.toBeUndefined();
 
@@ -3800,7 +3985,7 @@ describe("gateway plugin hot reload handlers", () => {
           noopPaths: [],
         },
         { plugins: { enabled: true } },
-        { publish },
+        { publish, isCurrent: () => true },
       ),
     ).rejects.toThrow("config hot reload recovery is unavailable");
 
@@ -3854,7 +4039,7 @@ describe("gateway plugin hot reload handlers", () => {
           noopPaths: [],
         },
         { plugins: { enabled: true } },
-        { publish },
+        { publish, isCurrent: () => true },
       ),
     ).rejects.toThrow("publication failed");
 
