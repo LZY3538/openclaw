@@ -8,12 +8,15 @@ import { loadAuthProfileStoreWithoutExternalProfiles } from "../agents/auth-prof
 import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.js";
 import { measureDiagnosticsTimelineSpan } from "../infra/diagnostics-timeline.js";
 import {
-  activateSecretsRuntimeSnapshot,
   clearSecretsRuntimeSnapshot,
   getActiveSecretsRuntimeSnapshot,
   getActiveSecretsRuntimeSnapshotRevision,
 } from "../secrets/runtime-state.js";
-import type { PreparedSecretsRuntimeSnapshot, SecretResolverWarning } from "../secrets/runtime.js";
+import {
+  activateSecretsRuntimeSnapshot,
+  type PreparedSecretsRuntimeSnapshot,
+  type SecretResolverWarning,
+} from "../secrets/runtime.js";
 import { KNOWN_WEAK_GATEWAY_TOKEN_PLACEHOLDERS } from "./known-weak-gateway-secrets.js";
 import {
   createRuntimeSecretsActivator,

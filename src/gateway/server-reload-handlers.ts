@@ -433,6 +433,8 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
     const channelsStoppedBeforePluginReload = new Set<ChannelKind>();
     let activePluginChannelsAfterReload: ReadonlySet<ChannelKind> | null = null;
     let pluginReloadAborted = false;
+    const isPluginReloadAborted = () =>
+      pluginReloadAborted || (abortGeneration !== undefined && myGeneration <= abortGeneration);
     let runtimeCommitted = false;
     let recoveryRestartScheduled = false;
     const shouldSkipChannelRestart = () =>
@@ -595,7 +597,7 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
             changedPaths: plan.changedPaths,
             beforeReplace: stopChannelsBeforePluginReplace,
             commitRuntime,
-            isAborted: () => pluginReloadAborted,
+            isAborted: isPluginReloadAborted,
           });
         } catch (err) {
           if (!runtimeCommitted) {
@@ -643,6 +645,7 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
       );
     }
     if (pluginReloadAborted) {
+      params.logChannels.info("channel restart cancelled by in-process restart");
       throw new GatewayHotReloadCancelledError();
     }
     try {

@@ -2174,7 +2174,9 @@ describe("gateway Gmail hot reload handlers", () => {
 
   it("retries managed hot reload when secrets change before publication", async () => {
     vi.useFakeTimers();
-    let writeListener: ((event: ConfigWriteNotification) => void) | null = null;
+    const writeListenerRef: { current: ((event: ConfigWriteNotification) => void) | null } = {
+      current: null,
+    };
     const initialConfig = {
       gateway: { reload: { debounceMs: 0 } },
       hooks: { enabled: true, token: "test-token", path: "/old" },
@@ -2199,10 +2201,13 @@ describe("gateway Gmail hot reload handlers", () => {
     const activatePreparedSnapshotIfCurrent = vi.fn(
       async (
         snapshot: PreparedSecretsRuntimeSnapshot,
-        _expectedRevision: number,
+        expectedRevision: number,
         _params: unknown,
         onActivated?: () => Promise<void>,
       ) => {
+        if (getActiveSecretsRuntimeSnapshotRevision() !== expectedRevision) {
+          return null;
+        }
         activateSecretsRuntimeSnapshot(snapshot);
         await onActivated?.();
         return snapshot;
@@ -2237,9 +2242,11 @@ describe("gateway Gmail hot reload handlers", () => {
       readSnapshot: vi.fn() as never,
       promoteSnapshot: promoteSnapshot as never,
       subscribeToWrites: ((listener: (event: ConfigWriteNotification) => void) => {
-        writeListener = listener;
+        writeListenerRef.current = listener;
         return () => {
-          writeListener = null;
+          if (writeListenerRef.current === listener) {
+            writeListenerRef.current = null;
+          }
         };
       }) as never,
       deps: {} as never,
@@ -2276,7 +2283,7 @@ describe("gateway Gmail hot reload handlers", () => {
       reconcileTerminalSessions: vi.fn(),
       commitTerminalConfig,
     });
-    const registeredWriteListener = writeListener;
+    const registeredWriteListener = writeListenerRef.current;
     if (!registeredWriteListener) {
       throw new Error("Expected config write listener to be registered");
     }
@@ -3396,7 +3403,9 @@ describe("deferred channel reload abort generation", () => {
       gateway: { reload: { debounceMs: 0 } },
       channels: { whatsapp: { enabled: false } },
     } as OpenClawConfig;
-    let writeListener: ((event: ConfigWriteNotification) => void) | null = null;
+    const writeListenerRef: { current: ((event: ConfigWriteNotification) => void) | null } = {
+      current: null,
+    };
     const commitTerminalConfig = vi.fn();
     const promoteSnapshot = vi.fn(async () => true);
     const logReload = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -3409,9 +3418,11 @@ describe("deferred channel reload abort generation", () => {
       readSnapshot: vi.fn() as never,
       promoteSnapshot: promoteSnapshot as never,
       subscribeToWrites: ((listener: (event: ConfigWriteNotification) => void) => {
-        writeListener = listener;
+        writeListenerRef.current = listener;
         return () => {
-          writeListener = null;
+          if (writeListenerRef.current === listener) {
+            writeListenerRef.current = null;
+          }
         };
       }) as never,
       deps: {} as never,
@@ -3454,7 +3465,7 @@ describe("deferred channel reload abort generation", () => {
       reconcileTerminalSessions: vi.fn(),
       commitTerminalConfig,
     });
-    const registeredWriteListener = writeListener;
+    const registeredWriteListener = writeListenerRef.current;
     if (!registeredWriteListener) {
       throw new Error("Expected config write listener to be registered");
     }
