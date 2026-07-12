@@ -1,5 +1,6 @@
 /** Tests command-scoped secret resolution from active runtime snapshots. */
 import { afterEach, describe, expect, it } from "vitest";
+import { getRuntimeAuthProfileStoreCredentialsRevision } from "../agents/auth-profiles/runtime-snapshots.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveCommandSecretsFromActiveRuntimeSnapshot } from "./runtime-command-secrets.js";
 import { createEmptyRuntimeWebToolsMetadata } from "./runtime-fast-path.js";
@@ -66,6 +67,7 @@ function activateMinimalSecretsRuntimeSnapshot(params: {
     sourceConfig: structuredClone(params.config),
     config: structuredClone(params.config),
     authStores: [],
+    authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
     warnings: [],
     webTools: createEmptyRuntimeWebToolsMetadata(),
   };

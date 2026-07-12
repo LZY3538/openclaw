@@ -31,7 +31,9 @@ import {
 import {
   clearRuntimeAuthProfileStoreSnapshots as clearRuntimeAuthProfileStoreSnapshotsImpl,
   getRuntimeAuthProfileStoreSnapshot as getRuntimeAuthProfileStoreSnapshotImpl,
+  noteRuntimeAuthProfileStoreCredentialsChanged,
   hasRuntimeAuthProfileStoreSnapshot,
+  listRuntimeAuthProfileStoreSnapshots,
   replaceRuntimeAuthProfileStoreSnapshots as replaceRuntimeAuthProfileStoreSnapshotsImpl,
   setRuntimeAuthProfileStoreSnapshot,
 } from "./runtime-snapshots.js";
@@ -232,7 +234,14 @@ function resolveRuntimeAuthProfileStore(
     });
   }
   if (mainStore) {
-    return mainStore;
+    const persistedRequestedStore = loadAuthProfileStoreForAgent(agentDir, {
+      readOnly: true,
+      syncExternalCli: false,
+      ...resolvePersistedLoadOptions(options),
+    });
+    return mergeAuthProfileStores(mainStore, persistedRequestedStore, {
+      preserveBaseRuntimeExternalProfiles: true,
+    });
   }
 
   return null;
@@ -1042,14 +1051,24 @@ export function saveAuthProfileStore(
   options?: SaveAuthProfileStoreOptions,
   database?: OpenClawAgentDatabase,
 ): void {
+  const savedAuthPath = resolveAuthStorePath(agentDir);
+  const mainAuthPath = resolveAuthStorePath(undefined);
+  const derivedSnapshots =
+    savedAuthPath === mainAuthPath
+      ? listRuntimeAuthProfileStoreSnapshots().filter(
+          (entry) => resolveAuthStorePath(entry.agentDir) !== mainAuthPath,
+        )
+      : [];
   const localStore = buildLocalAuthProfileStoreForSave({ store, agentDir, options });
   const existingRaw = readPersistedAuthProfileStoreRaw(agentDir, database);
   const payload = preserveLegacyOAuthRefsOnSave({
     payload: buildPersistedAuthProfileSecretsStore(localStore),
     existingRaw,
   });
-  if (!isDeepStrictEqual(existingRaw, payload)) {
+  const credentialsChanged = !isDeepStrictEqual(existingRaw, payload);
+  if (credentialsChanged) {
     writePersistedAuthProfileStoreRaw(payload, agentDir, database);
+    noteRuntimeAuthProfileStoreCredentialsChanged(agentDir);
   }
   if (database) {
     writePersistedAuthProfileStateRaw(
@@ -1074,6 +1093,17 @@ export function saveAuthProfileStore(
           })
         : nextRuntimeStore,
       agentDir,
+    );
+  }
+  for (const derived of derivedSnapshots) {
+    const refreshed = loadAuthProfileStoreForRuntime(derived.agentDir, {
+      readOnly: true,
+      syncExternalCli: false,
+      externalCli: { mode: "none" },
+    });
+    setRuntimeAuthProfileStoreSnapshot(
+      mergeRuntimeExternalProfileReferences({ next: refreshed, existing: derived.store }),
+      derived.agentDir,
     );
   }
 }

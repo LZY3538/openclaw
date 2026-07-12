@@ -1,13 +1,33 @@
+import path from "node:path";
 /**
  * Process-local auth profile snapshots used by prepared runtimes and tests.
  * Snapshots are cloned at boundaries so callers cannot mutate shared state.
  */
+import { isDeepStrictEqual } from "node:util";
 import { cloneAuthProfileStore } from "./clone.js";
 import { resolveAuthStorePath } from "./path-resolve.js";
 import type { AuthProfileStore } from "./types.js";
 
 const runtimeAuthStoreSnapshots = new Map<string, AuthProfileStore>();
-let runtimeAuthStoreSnapshotsRevision = 0;
+let runtimeAuthStoreCredentialsRevision = 0;
+
+function credentialState(
+  entries: Iterable<[string, AuthProfileStore]>,
+): Array<readonly [string, AuthProfileStore["profiles"]]> {
+  return Array.from(entries)
+    .filter(([, store]) => Object.keys(store.profiles).length > 0)
+    .map(([key, store]) => [key, store.profiles] as const)
+    .toSorted(([left], [right]) => left.localeCompare(right));
+}
+
+function replaceChangesCredentials(
+  entries: Array<{ agentDir?: string; store: AuthProfileStore }>,
+): boolean {
+  const next = new Map(
+    entries.map((entry) => [resolveRuntimeStoreKey(entry.agentDir), entry.store] as const),
+  );
+  return !isDeepStrictEqual(credentialState(runtimeAuthStoreSnapshots), credentialState(next));
+}
 
 // Runtime snapshots are keyed by the resolved auth store path so default-agent
 // and per-agent stores do not overwrite each other.
@@ -21,6 +41,17 @@ export function getRuntimeAuthProfileStoreSnapshot(
 ): AuthProfileStore | undefined {
   const store = runtimeAuthStoreSnapshots.get(resolveRuntimeStoreKey(agentDir));
   return store ? cloneAuthProfileStore(store) : undefined;
+}
+
+/** Lists cloned live snapshots for transactional rollback composition. */
+export function listRuntimeAuthProfileStoreSnapshots(): Array<{
+  agentDir: string;
+  store: AuthProfileStore;
+}> {
+  return Array.from(runtimeAuthStoreSnapshots, ([key, store]) => ({
+    agentDir: path.dirname(key),
+    store: cloneAuthProfileStore(store),
+  }));
 }
 
 /** Returns true when a runtime snapshot exists for an agent dir. */
@@ -45,7 +76,9 @@ export function hasAnyRuntimeAuthProfileStoreSource(agentDir?: string): boolean 
 export function replaceRuntimeAuthProfileStoreSnapshots(
   entries: Array<{ agentDir?: string; store: AuthProfileStore }>,
 ): void {
-  runtimeAuthStoreSnapshotsRevision += 1;
+  if (replaceChangesCredentials(entries)) {
+    runtimeAuthStoreCredentialsRevision += 1;
+  }
   runtimeAuthStoreSnapshots.clear();
   for (const entry of entries) {
     runtimeAuthStoreSnapshots.set(
@@ -57,7 +90,9 @@ export function replaceRuntimeAuthProfileStoreSnapshots(
 
 /** Clears all runtime auth profile snapshots. */
 export function clearRuntimeAuthProfileStoreSnapshots(): void {
-  runtimeAuthStoreSnapshotsRevision += 1;
+  if (credentialState(runtimeAuthStoreSnapshots).length > 0) {
+    runtimeAuthStoreCredentialsRevision += 1;
+  }
   runtimeAuthStoreSnapshots.clear();
 }
 
@@ -66,11 +101,33 @@ export function setRuntimeAuthProfileStoreSnapshot(
   store: AuthProfileStore,
   agentDir?: string,
 ): void {
-  runtimeAuthStoreSnapshotsRevision += 1;
-  runtimeAuthStoreSnapshots.set(resolveRuntimeStoreKey(agentDir), cloneAuthProfileStore(store));
+  const key = resolveRuntimeStoreKey(agentDir);
+  if (!isDeepStrictEqual(runtimeAuthStoreSnapshots.get(key)?.profiles ?? {}, store.profiles)) {
+    runtimeAuthStoreCredentialsRevision += 1;
+  }
+  runtimeAuthStoreSnapshots.set(key, cloneAuthProfileStore(store));
 }
 
-/** Stable token for compare-and-replace ownership across async auth refreshes. */
-export function getRuntimeAuthProfileStoreSnapshotsRevision(): number {
-  return runtimeAuthStoreSnapshotsRevision;
+/**
+ * Invalidates prepared credential ownership after a persisted owner-store write.
+ * Main-store credentials are inherited by custom-agent snapshots, so those
+ * derived snapshots must be dropped even when no exact main snapshot exists.
+ */
+export function noteRuntimeAuthProfileStoreCredentialsChanged(agentDir?: string): void {
+  runtimeAuthStoreCredentialsRevision += 1;
+  const ownerKey = resolveRuntimeStoreKey(agentDir);
+  const mainKey = resolveRuntimeStoreKey(undefined);
+  if (ownerKey !== mainKey) {
+    return;
+  }
+  for (const key of runtimeAuthStoreSnapshots.keys()) {
+    if (key !== mainKey) {
+      runtimeAuthStoreSnapshots.delete(key);
+    }
+  }
+}
+
+/** Stable token for credential ownership without coupling to usage bookkeeping. */
+export function getRuntimeAuthProfileStoreCredentialsRevision(): number {
+  return runtimeAuthStoreCredentialsRevision;
 }

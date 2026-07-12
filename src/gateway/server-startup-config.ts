@@ -29,6 +29,7 @@ import {
 import {
   activateSecretsRuntimeSnapshotState,
   getActiveSecretsRuntimeSnapshotRevision,
+  hasCurrentAuthStoreCredentialsRevision,
 } from "../secrets/runtime-state.js";
 import { createLazyPromise } from "../shared/lazy-runtime.js";
 import { resolveGatewayAuth } from "./auth.js";
@@ -367,6 +368,7 @@ export function createRuntimeSecretsActivator(params: {
     return await runWithSecretsActivationLock(async () => {
       if (
         getActiveSecretsRuntimeSnapshotRevision() !== expectedRevision ||
+        !hasCurrentAuthStoreCredentialsRevision(snapshot) ||
         (canActivate && !canActivate())
       ) {
         return null;

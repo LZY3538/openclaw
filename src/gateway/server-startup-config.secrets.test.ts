@@ -5,6 +5,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadAuthProfileStoreWithoutExternalProfiles } from "../agents/auth-profiles.js";
+import {
+  getRuntimeAuthProfileStoreCredentialsRevision,
+  getRuntimeAuthProfileStoreSnapshot,
+  setRuntimeAuthProfileStoreSnapshot,
+} from "../agents/auth-profiles/runtime-snapshots.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.js";
 import { measureDiagnosticsTimelineSpan } from "../infra/diagnostics-timeline.js";
 import {
@@ -89,6 +94,7 @@ function preparedSnapshot(config: OpenClawConfig): PreparedSecretsRuntimeSnapsho
     sourceConfig: config,
     config,
     authStores: [],
+    authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
     warnings: [],
     webTools: {
       search: {
@@ -390,6 +396,65 @@ describe("gateway startup config secret preflight", () => {
       }),
     ).resolves.toBe(candidate);
     expect(activateRuntimeSecretsSnapshot).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a managed reload prepared before an OAuth credential mutation", async () => {
+    const agentDir = "/tmp/openclaw-managed-auth-store-cas";
+    const initial = preparedSnapshot(gatewayTokenConfig({}));
+    const candidate: PreparedSecretsRuntimeSnapshot = {
+      ...preparedSnapshotWithGatewayToken(initial.sourceConfig, "candidate-token"),
+      authStores: [
+        {
+          agentDir,
+          store: {
+            version: 1,
+            profiles: {
+              "openai:default": {
+                type: "oauth",
+                provider: "openai",
+                access: "access-old",
+                refresh: "refresh-old",
+                expires: Date.now() + 60_000,
+              },
+            },
+          },
+        },
+      ],
+    };
+    const activateRuntimeSecretsSnapshot = vi.fn(activateSecretsRuntimeSnapshotForTest);
+    const activateRuntimeSecrets = runtimeSecretsActivatorForTest({
+      prepareRuntimeSecretsSnapshot: vi.fn(async ({ config }) => preparedSnapshot(config)),
+      activateRuntimeSecretsSnapshot,
+    });
+    activateSecretsRuntimeSnapshotForTest(initial);
+    const initialRevision = getActiveSecretsRuntimeSnapshotRevision();
+    setRuntimeAuthProfileStoreSnapshot(
+      {
+        version: 1,
+        profiles: {
+          "openai:default": {
+            type: "oauth",
+            provider: "openai",
+            access: "access-new",
+            refresh: "refresh-new",
+            expires: Date.now() + 120_000,
+          },
+        },
+      },
+      agentDir,
+    );
+
+    await expect(
+      activateRuntimeSecrets.activatePreparedSnapshotIfCurrent?.(candidate, initialRevision, {
+        reason: "reload",
+        activate: true,
+      }),
+    ).resolves.toBeNull();
+    expect(activateRuntimeSecretsSnapshot).not.toHaveBeenCalled();
+    expect(getRuntimeAuthProfileStoreSnapshot(agentDir)?.profiles["openai:default"]).toMatchObject({
+      access: "access-new",
+      refresh: "refresh-new",
+    });
   });
 
   it("holds activation ownership through the accepted publication callback", async () => {

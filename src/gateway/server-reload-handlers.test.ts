@@ -2,6 +2,7 @@
  * Gateway config reload handler tests.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getRuntimeAuthProfileStoreCredentialsRevision } from "../agents/auth-profiles/runtime-snapshots.js";
 import {
   addSession,
   markBackgrounded,
@@ -485,6 +486,7 @@ function createManagedRestartSequenceHarness() {
       sourceConfig: config,
       config,
       authStores: [],
+      authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
       warnings: [],
       webTools: createEmptyRuntimeWebToolsMetadata(),
     };
@@ -689,6 +691,7 @@ async function runManagedOwnershipScenario(params: {
     sourceConfig: config,
     config,
     authStores: [],
+    authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
     warnings: [],
     webTools: createEmptyRuntimeWebToolsMetadata(),
   });
@@ -3174,6 +3177,7 @@ describe("gateway Gmail hot reload handlers", () => {
       sourceConfig: config,
       config,
       authStores: [],
+      authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
       warnings: [],
       webTools: {},
     }));
@@ -3326,6 +3330,7 @@ describe("gateway Gmail hot reload handlers", () => {
         sourceConfig: config,
         config,
         authStores: [],
+        authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
         warnings: [],
         webTools: createEmptyRuntimeWebToolsMetadata(),
       };
@@ -3525,6 +3530,7 @@ describe("gateway Gmail hot reload handlers", () => {
         sourceConfig: config,
         config,
         authStores: [],
+        authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
         warnings: [],
         webTools: createEmptyRuntimeWebToolsMetadata(),
       };
@@ -3854,6 +3860,7 @@ describe("gateway Gmail hot reload handlers", () => {
       sourceConfig: initialConfig,
       config: initialConfig,
       authStores: [],
+      authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
       warnings: [],
       webTools: createEmptyRuntimeWebToolsMetadata(),
     };
@@ -3894,6 +3901,7 @@ describe("gateway Gmail hot reload handlers", () => {
           sourceConfig: config,
           config,
           authStores: [],
+          authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
           warnings: [],
           webTools: createEmptyRuntimeWebToolsMetadata(),
         };
@@ -4102,6 +4110,7 @@ describe("gateway Gmail hot reload handlers", () => {
         sourceConfig: config,
         config,
         authStores: [],
+        authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
         warnings: [],
         webTools: {},
       })) as never,
@@ -4150,6 +4159,7 @@ describe("gateway Gmail hot reload handlers", () => {
       sourceConfig: initialConfig,
       config: initialConfig,
       authStores: [],
+      authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
       warnings: [],
       webTools: createEmptyRuntimeWebToolsMetadata(),
     });
@@ -4215,6 +4225,7 @@ describe("gateway Gmail hot reload handlers", () => {
         sourceConfig: config,
         config,
         authStores: [],
+        authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
         warnings: [],
         webTools: {},
       })) as never,
@@ -4329,6 +4340,7 @@ describe("gateway Gmail hot reload handlers", () => {
           sourceConfig: config,
           config,
           authStores: [],
+          authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
           warnings: [],
           webTools: {},
         };
@@ -4695,7 +4707,7 @@ describe("gateway plugin hot reload handlers", () => {
         },
         { plugins: { enabled: true } },
       ),
-    ).rejects.toThrow("config hot reload cancelled by in-process restart");
+    ).rejects.toThrow("config hot reload cancelled by config supersession or in-process restart");
 
     expect(events).toEqual(["stop:discord", "start:discord"]);
     expect(handlers.setState).not.toHaveBeenCalled();
@@ -5089,7 +5101,7 @@ describe("deferred channel reload abort generation", () => {
     try {
       const reloadPromise = applyHotReload(abortChannelReloadPlan, {});
       const reloadRejected = expect(reloadPromise).rejects.toThrow(
-        "config hot reload cancelled by in-process restart",
+        "config hot reload cancelled by config supersession or in-process restart",
       );
       await vi.advanceTimersByTimeAsync(10); // enter wait loop (before 500ms sleep)
 
@@ -5099,8 +5111,49 @@ describe("deferred channel reload abort generation", () => {
 
       expect(channels.start).not.toHaveBeenCalled();
       expect(logChannels.info).toHaveBeenCalledWith(
-        "channel restart cancelled by in-process restart",
+        "channel restart cancelled by config supersession or restart",
       );
+    } finally {
+      vi.useRealTimers();
+      hoisted.activeTaskBlockers.length = 0;
+    }
+  });
+
+  it("cancels active-work deferral when its config transaction is superseded", async () => {
+    const logChannels = { info: vi.fn(), error: vi.fn() };
+    const channels = {
+      start: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+    };
+    const { applyHotReload } = createTestHandlers(logChannels, channels);
+    hoisted.activeTaskBlockers.push({
+      taskId: "task-blocking-superseded-reload",
+      status: "running",
+      runtime: "subagent",
+    });
+    let transactionCurrent = true;
+    vi.useFakeTimers();
+
+    try {
+      const reloadPromise = applyHotReload(
+        abortChannelReloadPlan,
+        {},
+        {
+          isCurrent: () => transactionCurrent,
+          publish: async (commit) => await commit(),
+        },
+      );
+      const reloadRejected = expect(reloadPromise).rejects.toThrow(
+        "config hot reload cancelled by config supersession or in-process restart",
+      );
+      await vi.advanceTimersByTimeAsync(10);
+
+      transactionCurrent = false;
+      await vi.advanceTimersByTimeAsync(500);
+      await reloadRejected;
+
+      expect(channels.stop).not.toHaveBeenCalled();
+      expect(channels.start).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
       hoisted.activeTaskBlockers.length = 0;
@@ -5173,6 +5226,7 @@ describe("deferred channel reload abort generation", () => {
         sourceConfig: config,
         config,
         authStores: [],
+        authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
         warnings: [],
         webTools: createEmptyRuntimeWebToolsMetadata(),
       })) as never,
@@ -5213,7 +5267,7 @@ describe("deferred channel reload abort generation", () => {
       reloaderStopped = true;
 
       const expectedError =
-        "config reload failed: GatewayHotReloadCancelledError: config hot reload cancelled by in-process restart";
+        "config reload failed: GatewayHotReloadCancelledError: config hot reload cancelled by config supersession or in-process restart";
       expect(commitTerminalConfig).not.toHaveBeenCalled();
       expect(promoteSnapshot).not.toHaveBeenCalled();
       expect(logReload.error).toHaveBeenCalledWith(expectedError);
@@ -5346,7 +5400,7 @@ describe("deferred channel reload abort generation", () => {
     try {
       const reloadPromise = applyHotReload(pluginReloadPlan, {});
       const reloadRejected = expect(reloadPromise).rejects.toThrow(
-        "config hot reload cancelled by in-process restart",
+        "config hot reload cancelled by config supersession or in-process restart",
       );
       // Advance into the waitForActiveWorkBeforeChannelReload poll loop
       await vi.advanceTimersByTimeAsync(100);
@@ -5361,7 +5415,7 @@ describe("deferred channel reload abort generation", () => {
       expect(reloadWasCancelled).toBe(true);
       // beforeReplace cancellation log
       expect(logChannels.info).toHaveBeenCalledWith(
-        "channel reload before plugin replace cancelled by in-process restart",
+        "channel reload before plugin replace cancelled by config supersession or restart",
       );
       // No channel should be started — cancelledByRestart = pluginReloadAborted = true
       expect(channels.start).not.toHaveBeenCalled();

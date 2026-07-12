@@ -67,6 +67,19 @@ async function activateSecretsRuntimeSnapshotIfCurrent(
   return runtime.getActiveSecretsRuntimeSnapshotRevision();
 }
 
+async function restoreSecretsRuntimeSnapshotIfCurrent(
+  snapshot: PreparedSecretsRuntimeSnapshot,
+  expectedRevision: number,
+  options?: { onActivated?: () => void },
+): Promise<number | null> {
+  const runtime = await import("../secrets/runtime.js");
+  if (!runtime.restoreSecretsRuntimeSnapshotIfCurrent(snapshot, expectedRevision)) {
+    return null;
+  }
+  options?.onActivated?.();
+  return runtime.getActiveSecretsRuntimeSnapshotRevision();
+}
+
 function createLazyHandler(
   method: string,
   loadHandlers: () => Promise<GatewayRequestHandlers>,
@@ -352,7 +365,7 @@ export function createGatewayAuxHandlers(params: {
               } catch (err) {
                 let generationRestored = false;
                 if (transaction) {
-                  await activateSecretsRuntimeSnapshotIfCurrent(
+                  await restoreSecretsRuntimeSnapshotIfCurrent(
                     transaction.previousSnapshot,
                     transaction.publishedSnapshotRevision,
                     {

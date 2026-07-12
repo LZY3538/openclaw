@@ -1,11 +1,19 @@
 /** Tests secrets runtime state clone isolation and refresh context. */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  getRuntimeAuthProfileStoreCredentialsRevision,
+  getRuntimeAuthProfileStoreSnapshot,
+  setRuntimeAuthProfileStoreSnapshot,
+} from "../agents/auth-profiles/runtime-snapshots.js";
 import { captureEnv } from "../test-utils/env.js";
 import {
   activateSecretsRuntimeSnapshotState,
+  activateSecretsRuntimeSnapshotStateIfCurrent,
   clearSecretsRuntimeSnapshot,
   getActiveSecretsRuntimeConfigSnapshot,
   getActiveSecretsRuntimeSnapshot,
+  getActiveSecretsRuntimeSnapshotRevision,
+  restoreSecretsRuntimeSnapshotStateIfCurrent,
   type PreparedSecretsRuntimeSnapshot,
 } from "./runtime-state.js";
 
@@ -26,6 +34,7 @@ describe("secrets runtime state", () => {
       sourceConfig: { agents: { list: [{ id: "source" }] } },
       config: { agents: { list: [{ id: "runtime" }] } },
       authStores: [],
+      authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
       warnings: [],
       webTools: {
         search: { providerSource: "none", diagnostics: [] },
@@ -47,5 +56,127 @@ describe("secrets runtime state", () => {
     expect(configSnapshot?.sourceConfig).not.toBe(fullSnapshot?.sourceConfig);
     expect(configSnapshot?.config).toEqual(snapshot.config);
     expect(configSnapshot?.sourceConfig).toEqual(snapshot.sourceConfig);
+  });
+
+  it("preserves live auth bookkeeping when prepared credentials activate", () => {
+    const agentDir = "/tmp/openclaw-auth-bookkeeping-merge";
+    const credential = {
+      type: "api_key" as const,
+      provider: "openai",
+      key: "sk-current",
+    };
+    setRuntimeAuthProfileStoreSnapshot(
+      {
+        version: 1,
+        profiles: { "openai:default": credential },
+        usageStats: { "openai:default": { lastUsed: 1 } },
+      },
+      agentDir,
+    );
+    const snapshot: PreparedSecretsRuntimeSnapshot = {
+      sourceConfig: {},
+      config: {},
+      authStores: [
+        {
+          agentDir,
+          store: {
+            version: 1,
+            profiles: { "openai:default": credential },
+            usageStats: { "openai:default": { lastUsed: 1 } },
+          },
+        },
+      ],
+      authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
+      warnings: [],
+      webTools: {
+        search: { providerSource: "none", diagnostics: [] },
+        fetch: { providerSource: "none", diagnostics: [] },
+        diagnostics: [],
+      },
+    };
+    setRuntimeAuthProfileStoreSnapshot(
+      {
+        version: 1,
+        profiles: { "openai:default": credential },
+        usageStats: {
+          "openai:default": { lastUsed: 2, cooldownUntil: Date.now() + 60_000 },
+        },
+      },
+      agentDir,
+    );
+
+    activateSecretsRuntimeSnapshotState({
+      snapshot,
+      refreshContext: null,
+      refreshHandler: null,
+    });
+
+    expect(
+      getRuntimeAuthProfileStoreSnapshot(agentDir)?.usageStats?.["openai:default"],
+    ).toMatchObject({ lastUsed: 2, cooldownUntil: expect.any(Number) });
+  });
+
+  it("restores owned config while preserving a later credential mutation", () => {
+    const agentDir = "/tmp/openclaw-auth-rollback-cas";
+    const snapshot = (key: string, port: number): PreparedSecretsRuntimeSnapshot => ({
+      sourceConfig: {},
+      config: { gateway: { port } },
+      authStores: [
+        {
+          agentDir,
+          store: {
+            version: 1,
+            profiles: {
+              "openai:default": { type: "api_key", provider: "openai", key },
+            },
+          },
+        },
+      ],
+      authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
+      warnings: [],
+      webTools: {
+        search: { providerSource: "none", diagnostics: [] },
+        fetch: { providerSource: "none", diagnostics: [] },
+        diagnostics: [],
+      },
+    });
+    activateSecretsRuntimeSnapshotState({
+      snapshot: snapshot("sk-old", 19_001),
+      refreshContext: null,
+      refreshHandler: null,
+    });
+    const previous = getActiveSecretsRuntimeSnapshot();
+    const previousRevision = getActiveSecretsRuntimeSnapshotRevision();
+    expect(previous).not.toBeNull();
+    expect(
+      activateSecretsRuntimeSnapshotStateIfCurrent({
+        snapshot: snapshot("sk-candidate", 19_002),
+        expectedRevision: previousRevision,
+        refreshContext: null,
+        refreshHandler: null,
+      }),
+    ).toBe(true);
+    const candidateRevision = getActiveSecretsRuntimeSnapshotRevision();
+    setRuntimeAuthProfileStoreSnapshot(
+      {
+        version: 1,
+        profiles: {
+          "openai:default": { type: "api_key", provider: "openai", key: "sk-external" },
+        },
+      },
+      agentDir,
+    );
+    expect(
+      restoreSecretsRuntimeSnapshotStateIfCurrent({
+        snapshot: previous!,
+        expectedRevision: candidateRevision,
+        refreshContext: null,
+        refreshHandler: null,
+      }),
+    ).toBe(true);
+    expect(getActiveSecretsRuntimeSnapshot()?.config.gateway?.port).toBe(19_001);
+    expect(getRuntimeAuthProfileStoreSnapshot(agentDir)?.profiles["openai:default"]).toMatchObject({
+      key: "sk-external",
+    });
   });
 });

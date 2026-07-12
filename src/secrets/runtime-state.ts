@@ -2,6 +2,8 @@
 import {
   clearRuntimeAuthProfileStoreSnapshots,
   getRuntimeAuthProfileStoreSnapshot,
+  getRuntimeAuthProfileStoreCredentialsRevision,
+  listRuntimeAuthProfileStoreSnapshots,
   replaceRuntimeAuthProfileStoreSnapshots,
 } from "../agents/auth-profiles/runtime-snapshots.js";
 import type { AuthProfileStore } from "../agents/auth-profiles/types.js";
@@ -26,6 +28,7 @@ export type PreparedSecretsRuntimeSnapshot = {
   sourceConfig: OpenClawConfig;
   config: OpenClawConfig;
   authStores: Array<{ agentDir: string; store: AuthProfileStore }>;
+  authStoreCredentialsRevision: number;
   warnings: SecretResolverWarning[];
   webTools: RuntimeWebToolsMetadata;
 };
@@ -78,9 +81,30 @@ function cloneSnapshot(snapshot: PreparedSecretsRuntimeSnapshot): PreparedSecret
       agentDir: entry.agentDir,
       store: structuredClone(entry.store),
     })),
+    authStoreCredentialsRevision: snapshot.authStoreCredentialsRevision,
     warnings: snapshot.warnings.map((warning) => ({ ...warning })),
     webTools: structuredClone(snapshot.webTools),
   };
+}
+
+function mergeLiveAuthStoreBookkeeping(
+  authStores: PreparedSecretsRuntimeSnapshot["authStores"],
+): PreparedSecretsRuntimeSnapshot["authStores"] {
+  return authStores.map((entry) => {
+    const live = getRuntimeAuthProfileStoreSnapshot(entry.agentDir);
+    if (!live) {
+      return entry;
+    }
+    return {
+      agentDir: entry.agentDir,
+      store: {
+        ...entry.store,
+        order: live.order,
+        lastGood: live.lastGood,
+        usageStats: live.usageStats,
+      },
+    };
+  });
 }
 
 /**
@@ -134,12 +158,19 @@ export function activateSecretsRuntimeSnapshotState(params: {
   refreshContext: SecretsRuntimeRefreshContext | null;
   refreshHandler: RuntimeConfigSnapshotRefreshHandler | null;
 }): void {
+  if (!hasCurrentAuthStoreCredentialsRevision(params.snapshot)) {
+    throw new Error(
+      "Cannot activate stale secrets runtime snapshot: auth credentials changed during preparation.",
+    );
+  }
   const next = cloneSnapshot(params.snapshot);
+  next.authStores = mergeLiveAuthStoreBookkeeping(next.authStores);
   const nextRefreshContext = params.refreshContext
     ? cloneSecretsRuntimeRefreshContext(params.refreshContext)
     : null;
   setRuntimeConfigSnapshot(next.config, next.sourceConfig);
   replaceRuntimeAuthProfileStoreSnapshots(next.authStores);
+  next.authStoreCredentialsRevision = getRuntimeAuthProfileStoreCredentialsRevision();
   activeSnapshot = next;
   activeSnapshotRevision += 1;
   activeRefreshContext = nextRefreshContext;
@@ -150,17 +181,49 @@ export function activateSecretsRuntimeSnapshotState(params: {
   setRuntimeConfigSnapshotRefreshHandler(params.refreshHandler);
 }
 
+/** Whether a prepared snapshot still owns the credential state it cloned. */
+export function hasCurrentAuthStoreCredentialsRevision(
+  snapshot: PreparedSecretsRuntimeSnapshot,
+): boolean {
+  return snapshot.authStoreCredentialsRevision === getRuntimeAuthProfileStoreCredentialsRevision();
+}
+
 /** Activates only while the caller still owns the snapshot revision it prepared against. */
 export function activateSecretsRuntimeSnapshotStateIfCurrent(
   params: Parameters<typeof activateSecretsRuntimeSnapshotState>[0] & {
     expectedRevision: number;
   },
 ): boolean {
-  if (activeSnapshotRevision !== params.expectedRevision) {
+  if (
+    activeSnapshotRevision !== params.expectedRevision ||
+    !hasCurrentAuthStoreCredentialsRevision(params.snapshot)
+  ) {
     return false;
   }
   activateSecretsRuntimeSnapshotState(params);
   return true;
+}
+
+/** Restores an owned predecessor while rejecting external credential mutations. */
+export function restoreSecretsRuntimeSnapshotStateIfCurrent(
+  params: Parameters<typeof activateSecretsRuntimeSnapshotState>[0] & {
+    expectedRevision: number;
+  },
+): boolean {
+  if (activeSnapshotRevision !== params.expectedRevision || !activeSnapshot) {
+    return false;
+  }
+  const credentialsChanged = !hasCurrentAuthStoreCredentialsRevision(activeSnapshot);
+  return activateSecretsRuntimeSnapshotStateIfCurrent({
+    ...params,
+    snapshot: {
+      ...params.snapshot,
+      authStores: credentialsChanged
+        ? listRuntimeAuthProfileStoreSnapshots()
+        : params.snapshot.authStores,
+      authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
+    },
+  });
 }
 
 /**
@@ -208,10 +271,10 @@ export function getLiveSecretsRuntimeAuthStores(): PreparedSecretsRuntimeSnapsho
   if (!activeSnapshot) {
     return [];
   }
-  return activeSnapshot.authStores.map((entry) => ({
-    agentDir: entry.agentDir,
-    store: getRuntimeAuthProfileStoreSnapshot(entry.agentDir) ?? structuredClone(entry.store),
-  }));
+  return activeSnapshot.authStores.flatMap((entry) => {
+    const store = getRuntimeAuthProfileStoreSnapshot(entry.agentDir);
+    return store ? [{ agentDir: entry.agentDir, store }] : [];
+  });
 }
 
 /**

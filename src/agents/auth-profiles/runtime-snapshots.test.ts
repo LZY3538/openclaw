@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   clearRuntimeAuthProfileStoreSnapshots,
   getRuntimeAuthProfileStoreSnapshot,
-  getRuntimeAuthProfileStoreSnapshotsRevision,
+  getRuntimeAuthProfileStoreCredentialsRevision,
   replaceRuntimeAuthProfileStoreSnapshots,
   setRuntimeAuthProfileStoreSnapshot,
 } from "./runtime-snapshots.js";
@@ -53,16 +53,20 @@ function expectOpenAICodexSnapshotCredential(
 }
 
 describe("runtime auth profile snapshots", () => {
-  it("advances revision for every snapshot mutation", () => {
-    const initialRevision = getRuntimeAuthProfileStoreSnapshotsRevision();
-    setRuntimeAuthProfileStoreSnapshot(createStore("set"));
-    expect(getRuntimeAuthProfileStoreSnapshotsRevision()).toBe(initialRevision + 1);
+  it("advances credential revision without coupling to usage bookkeeping", () => {
+    const initialRevision = getRuntimeAuthProfileStoreCredentialsRevision();
+    const store = createStore("set");
+    setRuntimeAuthProfileStoreSnapshot(store);
+    expect(getRuntimeAuthProfileStoreCredentialsRevision()).toBe(initialRevision + 1);
 
-    replaceRuntimeAuthProfileStoreSnapshots([]);
-    expect(getRuntimeAuthProfileStoreSnapshotsRevision()).toBe(initialRevision + 2);
+    setRuntimeAuthProfileStoreSnapshot({
+      ...store,
+      usageStats: { "openai:default": { lastUsed: 2 } },
+    });
+    expect(getRuntimeAuthProfileStoreCredentialsRevision()).toBe(initialRevision + 1);
 
     clearRuntimeAuthProfileStoreSnapshots();
-    expect(getRuntimeAuthProfileStoreSnapshotsRevision()).toBe(initialRevision + 3);
+    expect(getRuntimeAuthProfileStoreCredentialsRevision()).toBe(initialRevision + 2);
   });
 
   it("isolates set/get/replace snapshot mutations without structuredClone", () => {

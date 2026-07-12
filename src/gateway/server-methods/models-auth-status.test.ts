@@ -404,6 +404,40 @@ describe("models.authStatus", () => {
     expect(mocks.buildAuthHealthSummary).toHaveBeenCalledTimes(2);
   });
 
+  it("does not cache status captured before a concurrent logout", async () => {
+    let releaseUsage: (() => void) | undefined;
+    const usageBlocked = new Promise<void>((resolve) => {
+      releaseUsage = resolve;
+    });
+    const oauthProfile = {
+      profileId: "openrouter:default",
+      provider: "openrouter",
+      type: "oauth",
+      status: "ok",
+      source: "store",
+      label: "openrouter:default",
+    } satisfies AuthHealthSummary["profiles"][number];
+    mocks.buildAuthHealthSummary.mockReturnValue({
+      now: 0,
+      warnAfterMs: 0,
+      profiles: [oauthProfile],
+      providers: [{ provider: "openrouter", status: "ok", profiles: [oauthProfile] }],
+    });
+    mocks.loadProviderUsageSummary.mockImplementationOnce(async () => {
+      await usageBlocked;
+      return emptyUsageSummary();
+    });
+
+    const inFlightStatus = handler(createOptions());
+    await vi.waitFor(() => expect(mocks.loadProviderUsageSummary).toHaveBeenCalledOnce());
+    await logoutHandler(createLogoutOptions({ provider: "openrouter" }));
+    releaseUsage?.();
+    await inFlightStatus;
+
+    await handler(createOptions());
+    expect(mocks.buildAuthHealthSummary).toHaveBeenCalledTimes(2);
+  });
+
   it("does not query usage for api-key-only providers", async () => {
     mocks.buildAuthHealthSummary.mockReturnValue({
       now: 0,

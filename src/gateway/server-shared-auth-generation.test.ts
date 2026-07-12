@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { getRuntimeAuthProfileStoreCredentialsRevision } from "../agents/auth-profiles/runtime-snapshots.js";
 import { createEmptyRuntimeWebToolsMetadata } from "../secrets/runtime-fast-path.js";
 import {
   activateSecretsRuntimeSnapshot,
@@ -30,6 +31,7 @@ describe("shared gateway generation publication", () => {
       sourceConfig: {},
       config: {},
       authStores: [],
+      authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
       warnings: [],
       webTools: createEmptyRuntimeWebToolsMetadata(),
     };

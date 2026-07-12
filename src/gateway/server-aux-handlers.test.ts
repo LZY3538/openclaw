@@ -1,6 +1,11 @@
 // Gateway auxiliary handler tests cover hot config reload behavior, prepared
 // secret snapshot updates, and restart-plan side effects.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  getRuntimeAuthProfileStoreCredentialsRevision,
+  getRuntimeAuthProfileStoreSnapshot,
+  setRuntimeAuthProfileStoreSnapshot,
+} from "../agents/auth-profiles/runtime-snapshots.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   activateSecretsRuntimeSnapshot,
@@ -40,6 +45,7 @@ function createSnapshot(config: OpenClawConfig): PreparedSecretsRuntimeSnapshot 
     sourceConfig: asConfig({}),
     config,
     authStores: [],
+    authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
     warnings: [],
     webTools: {
       search: { providerSource: "none", diagnostics: [] },
@@ -355,6 +361,7 @@ describe("gateway aux handlers", () => {
   });
 
   it("rolls back stopped channels when a later restart fails", async () => {
+    const authAgentDir = "/tmp/openclaw-secrets-reload-concurrent-oauth";
     const buildReloadPlan = buildRestartChannelsPlan("slack", "zalo");
     activateSnapshot(slackZaloConfig("old-slack-secret", "old-zalo-secret"));
     const activateRuntimeSecrets = mockResolvedSecrets(
@@ -365,14 +372,35 @@ describe("gateway aux handlers", () => {
       .fn()
       .mockResolvedValueOnce(undefined)
       .mockImplementationOnce(async () => {
+        setRuntimeAuthProfileStoreSnapshot(
+          {
+            version: 1,
+            profiles: {
+              "openai:default": {
+                type: "oauth",
+                provider: "openai",
+                access: "access-new",
+                refresh: "refresh-new",
+                expires: Date.now() + 60_000,
+              },
+            },
+          },
+          authAgentDir,
+        );
         throw new Error("zalo refused to start");
       })
       .mockResolvedValue(undefined);
     const logChannelsInfo = vi.fn();
+    const sharedGatewaySessionGenerationState = {
+      current: "gen-old" as string | undefined,
+      required: "gen-old" as string | undefined | null,
+    };
 
     const { reload, respond } = createSecretsReloadHarness({
       activateRuntimeSecrets,
       buildReloadPlan,
+      sharedGatewaySessionGenerationState,
+      resolveSharedGatewaySessionGenerationForConfig: () => "gen-new",
       startChannel,
       stopChannel,
       logChannelsInfo,
@@ -407,6 +435,13 @@ describe("gateway aux handlers", () => {
     expect(getActiveSecretsRuntimeSnapshot()?.config).toEqual(
       slackZaloConfig("old-slack-secret", "old-zalo-secret"),
     );
+    expect(sharedGatewaySessionGenerationState).toEqual({
+      current: "gen-old",
+      required: "gen-old",
+    });
+    expect(
+      getRuntimeAuthProfileStoreSnapshot(authAgentDir)?.profiles["openai:default"],
+    ).toMatchObject({ access: "access-new", refresh: "refresh-new" });
   });
 
   it("does not roll back over a snapshot published after secrets.reload activation", async () => {

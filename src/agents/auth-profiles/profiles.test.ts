@@ -18,6 +18,7 @@ import {
   promoteAuthProfileInOrder,
   upsertAuthProfileWithLock,
 } from "./profiles.js";
+import { getRuntimeAuthProfileStoreCredentialsRevision } from "./runtime-snapshots.js";
 import {
   clearRuntimeAuthProfileStoreSnapshots,
   getRuntimeAuthProfileStoreSnapshot,
@@ -99,6 +100,105 @@ function expectOAuthCredentialFields(
 }
 
 describe("promoteAuthProfileInOrder", () => {
+  it("refreshes inherited main selection state without advancing credential ownership", async () => {
+    await withAuthProfileTestState(
+      "openclaw-auth-profile-main-selection-",
+      async ({ agentDirFor }) => {
+        const customAgentDir = agentDirFor("custom");
+        fs.mkdirSync(customAgentDir, { recursive: true });
+        const mainStore = (selected: string): AuthProfileStore => ({
+          version: AUTH_STORE_VERSION,
+          profiles: {
+            "openai:first": {
+              type: "api_key",
+              provider: "openai",
+              key: "sk-first",
+            },
+            "openai:second": {
+              type: "api_key",
+              provider: "openai",
+              key: "sk-second",
+            },
+          },
+          order: { openai: [selected] },
+        });
+        saveAuthProfileStore(mainStore("openai:first"));
+        replaceRuntimeAuthProfileStoreSnapshots([
+          {
+            agentDir: customAgentDir,
+            store: loadAuthProfileStoreForRuntime(customAgentDir),
+          },
+        ]);
+        const credentialsRevision = getRuntimeAuthProfileStoreCredentialsRevision();
+
+        saveAuthProfileStore(mainStore("openai:second"));
+
+        expect(getRuntimeAuthProfileStoreCredentialsRevision()).toBe(credentialsRevision);
+        expect(getRuntimeAuthProfileStoreSnapshot(customAgentDir)?.order?.openai).toEqual([
+          "openai:second",
+        ]);
+      },
+      { clearOAuthDir: true },
+    );
+  });
+
+  it("rebuilds a derived custom-agent snapshot after main OAuth rotation", async () => {
+    await withAuthProfileTestState(
+      "openclaw-auth-profile-main-inheritance-",
+      async ({ agentDirFor }) => {
+        const customAgentDir = agentDirFor("custom");
+        fs.mkdirSync(customAgentDir, { recursive: true });
+        const mainStore = (access: string): AuthProfileStore => ({
+          version: AUTH_STORE_VERSION,
+          profiles: {
+            "openai:default": {
+              type: "oauth",
+              provider: "openai",
+              access,
+              refresh: `refresh-${access}`,
+              expires: Date.now() + 60_000,
+            },
+          },
+        });
+        saveAuthProfileStore(mainStore("old"));
+        saveAuthProfileStore(
+          {
+            version: AUTH_STORE_VERSION,
+            profiles: {
+              "anthropic:custom": {
+                type: "api_key",
+                provider: "anthropic",
+                key: "sk-custom",
+              },
+            },
+          },
+          customAgentDir,
+        );
+        replaceRuntimeAuthProfileStoreSnapshots([
+          {
+            agentDir: customAgentDir,
+            store: loadAuthProfileStoreForRuntime(customAgentDir),
+          },
+        ]);
+        expect(
+          getRuntimeAuthProfileStoreSnapshot(customAgentDir)?.profiles["openai:default"],
+        ).toMatchObject({ access: "old" });
+
+        saveAuthProfileStore(mainStore("new"));
+
+        expect(
+          getRuntimeAuthProfileStoreSnapshot(customAgentDir)?.profiles["openai:default"],
+        ).toMatchObject({ access: "new", refresh: "refresh-new" });
+        expect(
+          ensureAuthProfileStoreWithoutExternalProfiles(customAgentDir).profiles[
+            "anthropic:custom"
+          ],
+        ).toMatchObject({ key: "sk-custom" });
+      },
+      { clearOAuthDir: true },
+    );
+  });
+
   it("marks newly saved runtime snapshot profiles as persisted", async () => {
     await withAuthProfileTestState(
       "openclaw-auth-profile-runtime-persisted-",
