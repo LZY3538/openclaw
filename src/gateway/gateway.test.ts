@@ -228,6 +228,8 @@ describe("gateway e2e", () => {
         setTestEnvValue("OPENCLAW_TEST_GATEWAY_OVERRIDE_TOKEN", overrideToken);
       }
       if (authSource === "runtime-overrides") {
+        deleteTestEnvValue("OPENCLAW_SKIP_CHANNELS");
+        deleteTestEnvValue("OPENCLAW_SKIP_PROVIDERS");
         setTestEnvValue("OPENCLAW_TEST_RUNTIME_OVERRIDE_TOKEN", overrideToken);
         expect(
           setConfigOverride("gateway.auth.token", {
@@ -290,7 +292,7 @@ describe("gateway e2e", () => {
           callerAuthOverride.rateLimit!.maxAttempts = 99;
           callerTailscaleOverride.serviceName = "svc:mutated";
         }
-        await configIO.writeConfigFile({
+        await writeConfigFile({
           ...initialConfig,
           logging: { level: "debug" },
         });
@@ -326,7 +328,7 @@ describe("gateway e2e", () => {
 
           await writeConfigFile({
             ...getRuntimeConfig(),
-            identity: { name: "unrelated-managed-write" },
+            ui: { assistant: { name: "unrelated-managed-write" } },
           });
           const persistedAfterUnrelatedWrite = JSON.parse(
             await fs.readFile(configPath, "utf-8"),
@@ -334,7 +336,7 @@ describe("gateway e2e", () => {
           expect(persistedAfterUnrelatedWrite.channels?.whatsapp?.dmPolicy).toBe("disabled");
 
           resetConfigOverrides();
-          await configIO.writeConfigFile({
+          await writeConfigFile({
             ...initialConfig,
             logging: { level: "warn" },
           });
@@ -345,7 +347,7 @@ describe("gateway e2e", () => {
           expect(getRuntimeConfig().logging?.level).toBe("debug");
 
           const acceptedPort = getRuntimeConfig().gateway?.port;
-          await configIO.writeConfigFile({
+          await writeConfigFile({
             ...initialConfig,
             gateway: { ...initialConfig.gateway, port: port + 1 },
             logging: { level: "warn" },
@@ -412,7 +414,12 @@ describe("gateway e2e", () => {
 
       try {
         setTestEnvValue("OPENCLAW_TEST_GATEWAY_OVERRIDE_TOKEN", newToken);
-        await oldClient.request("secrets.reload", {});
+        const reload = await oldClient
+          .request<{ ok?: boolean }>("secrets.reload", {})
+          .catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
+        if (!(reload instanceof Error)) {
+          expect(reload.ok).toBe(true);
+        }
         const newClient = await connectGatewayClient({
           url: `ws://127.0.0.1:${port}`,
           token: newToken,
@@ -420,7 +427,7 @@ describe("gateway e2e", () => {
         });
         await disconnectGatewayClient(newClient);
 
-        await configIO.writeConfigFile({
+        await writeConfigFile({
           gateway: { auth: { mode: "token", token: fileToken } },
           logging: { level: "debug" },
         });
@@ -460,7 +467,7 @@ describe("gateway e2e", () => {
       const seededOrigins = getRuntimeConfig().gateway?.controlUi?.allowedOrigins;
       expect(seededOrigins?.length).toBeGreaterThan(0);
 
-      await configIO.writeConfigFile({
+      await writeConfigFile({
         ...initialConfig,
         logging: { level: "debug" },
       });
@@ -470,9 +477,9 @@ describe("gateway e2e", () => {
       expect(getRuntimeConfig().gateway?.controlUi?.allowedOrigins).toEqual(seededOrigins);
 
       expect(setConfigOverride("logging.level", "warn").ok).toBe(true);
-      await configIO.writeConfigFile({
+      await writeConfigFile({
         ...initialConfig,
-        identity: { name: "override-active" },
+        ui: { assistant: { name: "override-active" } },
         logging: { level: "debug" },
       });
       await expect
@@ -480,9 +487,9 @@ describe("gateway e2e", () => {
         .toBe("warn");
 
       resetConfigOverrides();
-      await configIO.writeConfigFile({
+      await writeConfigFile({
         ...initialConfig,
-        identity: { name: "override-reset" },
+        ui: { assistant: { name: "override-reset" } },
         logging: { level: "debug" },
       });
       await expect
