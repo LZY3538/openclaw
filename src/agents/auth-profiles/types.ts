@@ -145,6 +145,8 @@ export type AuthProfileStore = AuthProfileSecretsStore &
   AuthProfileState & {
     /** Runtime-only provenance for credentials cloned from persisted auth stores. */
     runtimePersistedProfileIds?: string[];
+    /** Runtime-only profile ids owned by the requested store rather than inherited from main. */
+    runtimeLocalProfileIds?: string[];
     /** Runtime-only provenance for external OAuth profiles overlaid onto this store. */
     runtimeExternalProfileIds?: string[];
     /** True when the runtime external profile set was freshly resolved, even if empty. */

@@ -10,8 +10,93 @@ import type { AuthProfileStore } from "./types.js";
 
 const runtimeAuthStoreSnapshots = new Map<string, AuthProfileStore>();
 let runtimeAuthStoreCredentialsRevision = 0;
-const persistedStoreMutationRevision = new Map<string, number>();
-const persistedProfileMutationRevision = new Map<string, Map<string, number>>();
+let persistedMutationRevision = 0;
+let evictedOwnerMutationFloor = 0;
+const MAX_PERSISTED_MUTATION_OWNERS = 256;
+const MAX_PERSISTED_MUTATION_PROFILES_PER_OWNER = 256;
+
+type PersistedMutationRecord = {
+  credentialRevision: number;
+  stateRevision: number;
+  mutationFloor: number;
+  profileRevisions: Map<string, number>;
+};
+
+const persistedMutationRecords = new Map<string, PersistedMutationRecord>();
+
+function maxMutationRevision(record: PersistedMutationRecord): number {
+  return Math.max(
+    record.credentialRevision,
+    record.stateRevision,
+    record.mutationFloor,
+    ...record.profileRevisions.values(),
+  );
+}
+
+function getOrCreatePersistedMutationRecord(ownerKey: string): PersistedMutationRecord {
+  const existing = persistedMutationRecords.get(ownerKey);
+  if (existing) {
+    // Mutations, rather than reads, drive LRU recency so observation cannot
+    // retain dormant owners forever.
+    persistedMutationRecords.delete(ownerKey);
+    persistedMutationRecords.set(ownerKey, existing);
+    return existing;
+  }
+  const record: PersistedMutationRecord = {
+    credentialRevision: evictedOwnerMutationFloor,
+    stateRevision: evictedOwnerMutationFloor,
+    mutationFloor: evictedOwnerMutationFloor,
+    profileRevisions: new Map(),
+  };
+  persistedMutationRecords.set(ownerKey, record);
+  while (persistedMutationRecords.size > MAX_PERSISTED_MUTATION_OWNERS) {
+    const oldestOwnerKey = persistedMutationRecords.keys().next().value;
+    if (oldestOwnerKey === undefined) {
+      break;
+    }
+    const oldest = persistedMutationRecords.get(oldestOwnerKey);
+    persistedMutationRecords.delete(oldestOwnerKey);
+    if (oldest) {
+      // A floor trades false-positive rollback fences for bounded memory; it
+      // must never let an evicted persisted mutation look unchanged.
+      evictedOwnerMutationFloor = Math.max(evictedOwnerMutationFloor, maxMutationRevision(oldest));
+    }
+  }
+  record.credentialRevision = Math.max(record.credentialRevision, evictedOwnerMutationFloor);
+  record.stateRevision = Math.max(record.stateRevision, evictedOwnerMutationFloor);
+  record.mutationFloor = Math.max(record.mutationFloor, evictedOwnerMutationFloor);
+  return record;
+}
+
+function setProfileMutationRevision(
+  record: PersistedMutationRecord,
+  profileId: string,
+  revision: number,
+): void {
+  record.profileRevisions.delete(profileId);
+  record.profileRevisions.set(profileId, revision);
+  while (record.profileRevisions.size > MAX_PERSISTED_MUTATION_PROFILES_PER_OWNER) {
+    const oldestProfileId = record.profileRevisions.keys().next().value;
+    if (oldestProfileId === undefined) {
+      break;
+    }
+    const oldestRevision = record.profileRevisions.get(oldestProfileId) ?? 0;
+    record.profileRevisions.delete(oldestProfileId);
+    record.mutationFloor = Math.max(record.mutationFloor, oldestRevision);
+  }
+}
+
+function getPersistedMutationRecord(ownerKey: string): PersistedMutationRecord | undefined {
+  return persistedMutationRecords.get(ownerKey);
+}
+
+function getProfileMutationRevision(ownerKey: string, profileId: string): number {
+  const record = getPersistedMutationRecord(ownerKey);
+  if (!record) {
+    return evictedOwnerMutationFloor;
+  }
+  return record.profileRevisions.get(profileId) ?? record.mutationFloor;
+}
 
 function credentialState(
   entries: Iterable<[string, AuthProfileStore]>,
@@ -115,20 +200,31 @@ export function setRuntimeAuthProfileStoreSnapshot(
  * Main-store credentials are inherited by custom-agent snapshots, so those
  * derived snapshots must be dropped even when no exact main snapshot exists.
  */
-export function noteRuntimeAuthProfileStoreCredentialsChanged(
+export function noteRuntimeAuthProfileStorePersistedMutation(
   agentDir: string | undefined,
-  mutation: { profileIds: Iterable<string> },
+  mutation: {
+    credentialsChanged: boolean;
+    stateChanged: boolean;
+    profileIds: Iterable<string>;
+  },
 ): void {
-  runtimeAuthStoreCredentialsRevision += 1;
-  const ownerKey = resolveRuntimeStoreKey(agentDir);
-  persistedStoreMutationRevision.set(ownerKey, runtimeAuthStoreCredentialsRevision);
-  let profileRevisions = persistedProfileMutationRevision.get(ownerKey);
-  for (const profileId of mutation.profileIds) {
-    profileRevisions ??= new Map<string, number>();
-    profileRevisions.set(profileId, runtimeAuthStoreCredentialsRevision);
+  if (!mutation.credentialsChanged && !mutation.stateChanged) {
+    return;
   }
-  if (profileRevisions) {
-    persistedProfileMutationRevision.set(ownerKey, profileRevisions);
+  persistedMutationRevision += 1;
+  if (mutation.credentialsChanged) {
+    runtimeAuthStoreCredentialsRevision += 1;
+  }
+  const ownerKey = resolveRuntimeStoreKey(agentDir);
+  const record = getOrCreatePersistedMutationRecord(ownerKey);
+  if (mutation.credentialsChanged) {
+    record.credentialRevision = persistedMutationRevision;
+    for (const profileId of mutation.profileIds) {
+      setProfileMutationRevision(record, profileId, persistedMutationRevision);
+    }
+  }
+  if (mutation.stateChanged) {
+    record.stateRevision = persistedMutationRevision;
   }
   const mainKey = resolveRuntimeStoreKey(undefined);
   if (ownerKey !== mainKey) {
@@ -145,20 +241,43 @@ export function noteRuntimeAuthProfileStoreCredentialsChanged(
 export function getRuntimeAuthProfileStoreCredentialMutationRevision(
   agentDir?: string,
   profileId?: string,
+  options?: { includeMain?: boolean },
 ): number {
   const requestedKey = resolveRuntimeStoreKey(agentDir);
   if (!profileId) {
-    return persistedStoreMutationRevision.get(requestedKey) ?? 0;
+    return (
+      getPersistedMutationRecord(requestedKey)?.credentialRevision ?? evictedOwnerMutationFloor
+    );
   }
   const mainKey = resolveRuntimeStoreKey(undefined);
-  const keys = requestedKey === mainKey ? [mainKey] : [requestedKey, mainKey];
-  return Math.max(
-    0,
-    ...keys.map((key) => persistedProfileMutationRevision.get(key)?.get(profileId) ?? 0),
-  );
+  const keys =
+    requestedKey === mainKey || options?.includeMain !== true
+      ? [requestedKey]
+      : [requestedKey, mainKey];
+  return Math.max(0, ...keys.map((key) => getProfileMutationRevision(key, profileId)));
+}
+
+/** Persisted mutation token for non-secret selection state in one owner store. */
+export function getRuntimeAuthProfileStoreStateMutationRevision(agentDir?: string): number {
+  const ownerKey = resolveRuntimeStoreKey(agentDir);
+  return getPersistedMutationRecord(ownerKey)?.stateRevision ?? evictedOwnerMutationFloor;
 }
 
 /** Stable token for credential ownership without coupling to usage bookkeeping. */
 export function getRuntimeAuthProfileStoreCredentialsRevision(): number {
   return runtimeAuthStoreCredentialsRevision;
 }
+
+export const testing = {
+  MAX_PERSISTED_MUTATION_OWNERS,
+  MAX_PERSISTED_MUTATION_PROFILES_PER_OWNER,
+  getPersistedMutationRecordCounts(): { owners: number; profiles: number } {
+    return {
+      owners: persistedMutationRecords.size,
+      profiles: Math.max(
+        0,
+        ...Array.from(persistedMutationRecords.values(), (record) => record.profileRevisions.size),
+      ),
+    };
+  },
+};

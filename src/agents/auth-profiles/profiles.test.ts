@@ -19,7 +19,10 @@ import {
   promoteAuthProfileInOrder,
   upsertAuthProfileWithLock,
 } from "./profiles.js";
-import { getRuntimeAuthProfileStoreCredentialsRevision } from "./runtime-snapshots.js";
+import {
+  getRuntimeAuthProfileStoreCredentialsRevision,
+  getRuntimeAuthProfileStoreStateMutationRevision,
+} from "./runtime-snapshots.js";
 import {
   clearRuntimeAuthProfileStoreSnapshots,
   getRuntimeAuthProfileStoreSnapshot,
@@ -347,6 +350,30 @@ describe("promoteAuthProfileInOrder", () => {
     });
   });
 
+  it("tracks state-only saves without advancing credential ownership", async () => {
+    await withAuthProfileTestState("openclaw-auth-state-lineage-", async ({ agentDir }) => {
+      const store: AuthProfileStore = {
+        version: AUTH_STORE_VERSION,
+        profiles: {
+          "openai:default": { type: "api_key", provider: "openai", key: "sk-stable" },
+        },
+      };
+      saveAuthProfileStore(store, agentDir);
+      const credentialRevision = getRuntimeAuthProfileStoreCredentialsRevision();
+      const stateRevision = getRuntimeAuthProfileStoreStateMutationRevision(agentDir);
+
+      saveAuthProfileStore(
+        { ...store, usageStats: { "openai:default": { lastUsed: 42 } } },
+        agentDir,
+      );
+
+      expect(getRuntimeAuthProfileStoreCredentialsRevision()).toBe(credentialRevision);
+      expect(getRuntimeAuthProfileStoreStateMutationRevision(agentDir)).toBeGreaterThan(
+        stateRevision,
+      );
+    });
+  });
+
   it("marks newly saved runtime snapshot profiles as persisted", async () => {
     await withAuthProfileTestState(
       "openclaw-auth-profile-runtime-persisted-",
@@ -380,6 +407,9 @@ describe("promoteAuthProfileInOrder", () => {
           );
 
           expect(getRuntimeAuthProfileStoreSnapshot(agentDir)?.runtimePersistedProfileIds).toEqual([
+            "openai:work",
+          ]);
+          expect(getRuntimeAuthProfileStoreSnapshot(agentDir)?.runtimeLocalProfileIds).toEqual([
             "openai:work",
           ]);
         } finally {
@@ -417,6 +447,7 @@ describe("promoteAuthProfileInOrder", () => {
 
         const store = loadAuthProfileStoreWithoutExternalProfiles(agentDir);
         expect(store.runtimePersistedProfileIds).toEqual(["anthropic:key", "openai:manual"]);
+        expect(store.runtimeLocalProfileIds).toEqual(["anthropic:key", "openai:manual"]);
         expect(store.runtimeExternalProfileIds).toBeUndefined();
         expect(store.runtimeExternalProfileIdsAuthoritative).toBeUndefined();
         const profiles = store.profiles;

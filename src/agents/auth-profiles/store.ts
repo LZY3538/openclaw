@@ -32,7 +32,7 @@ import {
 import {
   clearRuntimeAuthProfileStoreSnapshots as clearRuntimeAuthProfileStoreSnapshotsImpl,
   getRuntimeAuthProfileStoreSnapshot as getRuntimeAuthProfileStoreSnapshotImpl,
-  noteRuntimeAuthProfileStoreCredentialsChanged,
+  noteRuntimeAuthProfileStorePersistedMutation,
   hasRuntimeAuthProfileStoreSnapshot,
   listRuntimeAuthProfileStoreSnapshots,
   replaceRuntimeAuthProfileStoreSnapshots as replaceRuntimeAuthProfileStoreSnapshotsImpl,
@@ -40,6 +40,7 @@ import {
 } from "./runtime-snapshots.js";
 import {
   readPersistedAuthProfileStoreRaw,
+  readPersistedAuthProfileStateRaw,
   writePersistedAuthProfileStateRaw,
   runAuthProfileWriteTransaction,
   writePersistedAuthProfileStoreRaw,
@@ -486,6 +487,9 @@ function pruneAuthProfileStoreReferences(
   if (store.runtimePersistedProfileIds?.length === 0) {
     store.runtimePersistedProfileIds = undefined;
   }
+  store.runtimeLocalProfileIds = store.runtimeLocalProfileIds
+    ?.filter((profileId) => keptProfileIds.has(profileId))
+    .toSorted();
   store.runtimeExternalProfileIds = store.runtimeExternalProfileIds
     ?.filter((profileId) => keptProfileIds.has(profileId))
     .toSorted();
@@ -606,6 +610,31 @@ function markRuntimePersistedProfiles(
     ...store,
     runtimePersistedProfileIds: profileIds.length > 0 ? profileIds : undefined,
   };
+}
+
+function setRuntimeLocalProfileMetadata(
+  store: AuthProfileStore,
+  localProfileIds: Iterable<string>,
+): AuthProfileStore {
+  return {
+    ...store,
+    runtimeLocalProfileIds: [...new Set(localProfileIds)].toSorted(),
+  };
+}
+
+function listRuntimeLocalProfileIds(
+  store: AuthProfileStore,
+  mainStore?: AuthProfileStore,
+): string[] {
+  return Object.entries(store.profiles).flatMap(([profileId, credential]) =>
+    mainStore &&
+    shouldUseMainOwnerForLocalOAuthCredential({
+      local: credential,
+      main: mainStore.profiles[profileId],
+    })
+      ? []
+      : [profileId],
+  );
 }
 
 function setRuntimeExternalProfileMetadata(params: {
@@ -889,21 +918,27 @@ export function loadAuthProfileStoreForRuntime(
   const mainAuthPath = resolveAuthStorePath();
   const externalCli = resolveExternalCliOverlayOptions(options);
   if (!agentDir || authPath === mainAuthPath) {
-    return overlayExternalAuthProfiles(store, {
-      agentDir,
-      ...externalCli,
-    });
+    return setRuntimeLocalProfileMetadata(
+      overlayExternalAuthProfiles(store, {
+        agentDir,
+        ...externalCli,
+      }),
+      listRuntimeLocalProfileIds(store),
+    );
   }
 
   const mainStore = loadAuthProfileStoreForAgent(undefined, options);
-  return overlayExternalAuthProfiles(
-    mergeAuthProfileStores(mainStore, store, {
-      preserveBaseRuntimeExternalProfiles: true,
-    }),
-    {
-      agentDir,
-      ...externalCli,
-    },
+  return setRuntimeLocalProfileMetadata(
+    overlayExternalAuthProfiles(
+      mergeAuthProfileStores(mainStore, store, {
+        preserveBaseRuntimeExternalProfiles: true,
+      }),
+      {
+        agentDir,
+        ...externalCli,
+      },
+    ),
+    listRuntimeLocalProfileIds(store, mainStore),
   );
 }
 
@@ -935,14 +970,20 @@ export function loadAuthProfileStoreWithoutExternalProfiles(
   const authPath = resolveAuthStorePath(agentDir);
   const mainAuthPath = resolveAuthStorePath();
   if (!agentDir || authPath === mainAuthPath) {
-    return stripRuntimeExternalProfileMetadata(store);
+    return setRuntimeLocalProfileMetadata(
+      stripRuntimeExternalProfileMetadata(store),
+      listRuntimeLocalProfileIds(store),
+    );
   }
 
   const mainStore = loadAuthProfileStoreForAgent(undefined, options);
-  return stripRuntimeExternalProfileMetadata(
-    mergeAuthProfileStores(mainStore, store, {
-      preserveBaseRuntimeExternalProfiles: true,
-    }),
+  return setRuntimeLocalProfileMetadata(
+    stripRuntimeExternalProfileMetadata(
+      mergeAuthProfileStores(mainStore, store, {
+        preserveBaseRuntimeExternalProfiles: true,
+      }),
+    ),
+    listRuntimeLocalProfileIds(store, mainStore),
   );
 }
 
@@ -1134,21 +1175,24 @@ export function saveAuthProfileStore(
     (profileId) => !isDeepStrictEqual(existingProfiles[profileId], payload.profiles[profileId]),
   );
   const credentialsChanged = !isDeepStrictEqual(existingRaw, payload);
+  const statePayload = buildPersistedAuthProfileState(localStore);
+  const stateChanged = !isDeepStrictEqual(
+    readPersistedAuthProfileStateRaw(agentDir, database),
+    statePayload,
+  );
   if (credentialsChanged) {
     writePersistedAuthProfileStoreRaw(payload, agentDir, database);
   }
   if (database) {
-    writePersistedAuthProfileStateRaw(
-      buildPersistedAuthProfileState(localStore),
-      agentDir,
-      database,
-    );
+    writePersistedAuthProfileStateRaw(statePayload, agentDir, database);
   } else {
     savePersistedAuthProfileState(localStore, agentDir);
   }
   const publishRuntimeSnapshots = () => {
-    if (credentialsChanged) {
-      noteRuntimeAuthProfileStoreCredentialsChanged(agentDir, {
+    if (credentialsChanged || stateChanged) {
+      noteRuntimeAuthProfileStorePersistedMutation(agentDir, {
+        credentialsChanged,
+        stateChanged,
         profileIds: changedProfileIds,
       });
     }

@@ -5,6 +5,7 @@ import {
   getRuntimeAuthProfileStoreSnapshot,
   getRuntimeAuthProfileStoreCredentialMutationRevision,
   getRuntimeAuthProfileStoreCredentialsRevision,
+  getRuntimeAuthProfileStoreStateMutationRevision,
   listRuntimeAuthProfileStoreSnapshots,
   replaceRuntimeAuthProfileStoreSnapshots,
 } from "../agents/auth-profiles/runtime-snapshots.js";
@@ -55,7 +56,11 @@ let activeSnapshotLineageStartRevision = 0;
 let activeSnapshotLineageAuthStores: PreparedSecretsRuntimeSnapshot["authStores"] = [];
 let activeSnapshotLineageAuthMutations: Record<
   string,
-  { store: number; profiles: Record<string, number> }
+  {
+    store: number;
+    state: number;
+    profiles: Record<string, { revision: number; includeMain: boolean }>;
+  }
 > = {};
 let activeRefreshContext: SecretsRuntimeRefreshContext | null = null;
 const clearHooks = new Set<() => void>();
@@ -122,24 +127,49 @@ function mergeLiveAuthStoreBookkeeping(
 function captureAuthStoreMutationLineage(
   authStores: PreparedSecretsRuntimeSnapshot["authStores"],
 ): typeof activeSnapshotLineageAuthMutations {
-  const profileIdsByAgentDir = new Map<string, Set<string>>();
+  const storesByAgentDir = new Map<string, AuthProfileStore>();
   for (const entry of authStores) {
-    const profileIds = profileIdsByAgentDir.get(entry.agentDir) ?? new Set<string>();
+    const existing = storesByAgentDir.get(entry.agentDir);
+    const localProfileIds = new Set(existing?.runtimeLocalProfileIds ?? []);
     for (const profileId of Object.keys(entry.store.profiles)) {
-      profileIds.add(profileId);
+      if (entry.store.runtimeLocalProfileIds?.includes(profileId)) {
+        localProfileIds.add(profileId);
+      } else {
+        localProfileIds.delete(profileId);
+      }
     }
-    profileIdsByAgentDir.set(entry.agentDir, profileIds);
+    storesByAgentDir.set(
+      entry.agentDir,
+      existing
+        ? {
+            ...entry.store,
+            profiles: { ...existing.profiles, ...entry.store.profiles },
+            runtimeLocalProfileIds: [...localProfileIds],
+          }
+        : entry.store,
+    );
   }
   return Object.fromEntries(
-    [...profileIdsByAgentDir].map(([agentDir, profileIds]) => [
+    [...storesByAgentDir].map(([agentDir, store]) => [
       agentDir,
       {
         store: getRuntimeAuthProfileStoreCredentialMutationRevision(agentDir),
+        state: getRuntimeAuthProfileStoreStateMutationRevision(agentDir),
         profiles: Object.fromEntries(
-          [...profileIds].map((profileId) => [
-            profileId,
-            getRuntimeAuthProfileStoreCredentialMutationRevision(agentDir, profileId),
-          ]),
+          Object.keys(store.profiles).map((profileId) => {
+            const includeMain = !store.runtimeLocalProfileIds?.includes(profileId);
+            return [
+              profileId,
+              {
+                revision: getRuntimeAuthProfileStoreCredentialMutationRevision(
+                  agentDir,
+                  profileId,
+                  { includeMain },
+                ),
+                includeMain,
+              },
+            ];
+          }),
         ),
       },
     ]),
@@ -341,6 +371,30 @@ function credentialSecretRef(credential: AuthProfileCredential | undefined): Sec
   return null;
 }
 
+function getProfileMutationLineage(params: {
+  agentDir: string;
+  profileId: string;
+  stores: Array<AuthProfileStore | undefined>;
+  mutationLineage: typeof activeSnapshotLineageAuthMutations;
+}): { current: number; captured: number } {
+  const captured = params.mutationLineage[params.agentDir]?.profiles[params.profileId];
+  const includeMain =
+    captured?.includeMain ??
+    !params.stores.some((store) => store?.runtimeLocalProfileIds?.includes(params.profileId));
+  return {
+    current: getRuntimeAuthProfileStoreCredentialMutationRevision(
+      params.agentDir,
+      params.profileId,
+      { includeMain },
+    ),
+    captured:
+      captured?.revision ??
+      getRuntimeAuthProfileStoreCredentialMutationRevision(params.agentDir, params.profileId, {
+        includeMain,
+      }),
+  };
+}
+
 function mergeRollbackAuthStoreCredentials(
   baseline: Record<string, AuthProfileStore>,
   candidate: Record<string, AuthProfileStore>,
@@ -362,13 +416,26 @@ function mergeRollbackAuthStoreCredentials(
     const storeMutated =
       getRuntimeAuthProfileStoreCredentialMutationRevision(agentDir) !==
       (mutationLineage[agentDir]?.store ?? 0);
-    const baselineProfileMutated = Object.keys(baselineStore?.profiles ?? {}).some(
-      (profileId) =>
-        getRuntimeAuthProfileStoreCredentialMutationRevision(agentDir, profileId) !==
-        (mutationLineage[agentDir]?.profiles[profileId] ?? 0),
-    );
+    const stateMutated =
+      getRuntimeAuthProfileStoreStateMutationRevision(agentDir) !==
+      (mutationLineage[agentDir]?.state ?? 0);
+    const baselineProfileMutated = Object.keys(baselineStore?.profiles ?? {}).some((profileId) => {
+      const revisions = getProfileMutationLineage({
+        agentDir,
+        profileId,
+        stores: [baselineStore, candidateStore, currentStore],
+        mutationLineage,
+      });
+      return revisions.current !== revisions.captured;
+    });
     if (!currentStore) {
-      if (!candidateStore && baselineStore && !storeMutated && !baselineProfileMutated) {
+      if (
+        !candidateStore &&
+        baselineStore &&
+        !storeMutated &&
+        !stateMutated &&
+        !baselineProfileMutated
+      ) {
         next[agentDir] = structuredClone(baselineStore);
       } else {
         delete next[agentDir];
@@ -386,9 +453,13 @@ function mergeRollbackAuthStoreCredentials(
       const baselineCredential = baselineStore?.profiles[profileId];
       const candidateCredential = candidateStore?.profiles[profileId];
       const currentCredential = currentStore.profiles[profileId];
-      const profileMutated =
-        getRuntimeAuthProfileStoreCredentialMutationRevision(agentDir, profileId) !==
-        (mutationLineage[agentDir]?.profiles[profileId] ?? 0);
+      const profileRevisions = getProfileMutationLineage({
+        agentDir,
+        profileId,
+        stores: [baselineStore, candidateStore, currentStore],
+        mutationLineage,
+      });
+      const profileMutated = profileRevisions.current !== profileRevisions.captured;
       let credential = isDeepStrictEqual(currentCredential, candidateCredential)
         ? profileMutated
           ? currentCredential
@@ -397,6 +468,17 @@ function mergeRollbackAuthStoreCredentials(
       const baselineRef = credentialSecretRef(baselineCredential);
       const candidateRef = credentialSecretRef(candidateCredential);
       const currentRef = credentialSecretRef(currentCredential);
+      if (
+        !profileMutated &&
+        candidateRef &&
+        currentRef &&
+        isDeepStrictEqual(candidateRef, currentRef) &&
+        !isDeepStrictEqual(baselineRef, candidateRef)
+      ) {
+        // Candidate activation owns the ref transition. Descendant resolution may refresh the
+        // literal, but without a persisted write rollback still restores the previous owner/ref.
+        credential = baselineCredential;
+      }
       if (
         baselineRef &&
         candidateRef &&
