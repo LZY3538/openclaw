@@ -221,7 +221,8 @@ export function startGatewayConfigReloader(opts: {
   let pendingInProcessConfig: InProcessConfigCandidate | null = null;
   let activeInProcessConfig: InProcessConfigCandidate | null = null;
   let watcherIntentCandidate: InProcessConfigCandidate | null = null;
-  let lastAppliedWriteHash = opts.initialInternalWriteHash ?? null;
+  let startupInternalWriteHash = opts.initialInternalWriteHash ?? null;
+  let lastAppliedWriteHash: string | null = null;
   let lastSourceOnlyWriteHash: string | null = null;
   let lastSourceOnlyReapplyRuntimeOverlays: ((config: OpenClawConfig) => OpenClawConfig) | null =
     null;
@@ -568,6 +569,27 @@ export function startGatewayConfigReloader(opts: {
     await run();
   };
 
+  const acceptCurrentRuntimeEcho = async (transactionEpoch: number) => {
+    const ownership: GatewayConfigReloadTransactionOwnership = {
+      isCurrent: () => configWriteEpoch === transactionEpoch,
+      reapplyRuntimeOverlays: currentReapplyRuntimeOverlays,
+      ...(currentRuntimeRefresh ? { runtimeRefresh: currentRuntimeRefresh } : {}),
+      markRuntimeCommitted: () => {},
+    };
+    await runAcceptedTransaction(async () => {
+      await flushPendingRuntimeApplication();
+      if (!ownership.isCurrent()) {
+        throw new GatewayConfigReloadSupersededError();
+      }
+      await opts.onConfigAccepted?.(currentConfig, ownership, currentSourceConfig, {
+        runtimeApplied: true,
+      });
+      if (!ownership.isCurrent()) {
+        throw new GatewayConfigReloadSupersededError();
+      }
+    });
+  };
+
   const promoteAcceptedInProcessWrite = async (persistedHash: string) => {
     if (!opts.promoteSnapshot) {
       return;
@@ -647,6 +669,19 @@ export function startGatewayConfigReloader(opts: {
         await flushPendingRuntimeApplication();
         return;
       }
+      if (startupInternalWriteHash && typeof snapshot.hash === "string") {
+        const matchesStartupWrite =
+          snapshot.valid &&
+          snapshot.hash === startupInternalWriteHash &&
+          diffConfigPaths(currentSourceConfig, snapshot.sourceConfig).length === 0;
+        // This hash comes from the startup write itself. Consume only its
+        // first source-identical watcher echo; includes can change under it.
+        startupInternalWriteHash = null;
+        if (matchesStartupWrite) {
+          await acceptCurrentRuntimeEcho(transactionEpoch);
+          return;
+        }
+      }
       if (
         intentCandidate &&
         snapshot.valid &&
@@ -720,24 +755,7 @@ export function startGatewayConfigReloader(opts: {
             });
             return;
           }
-          const ownership: GatewayConfigReloadTransactionOwnership = {
-            isCurrent: () => configWriteEpoch === transactionEpoch,
-            reapplyRuntimeOverlays: currentReapplyRuntimeOverlays,
-            ...(currentRuntimeRefresh ? { runtimeRefresh: currentRuntimeRefresh } : {}),
-            markRuntimeCommitted: () => {},
-          };
-          await runAcceptedTransaction(async () => {
-            await flushPendingRuntimeApplication();
-            if (!ownership.isCurrent()) {
-              throw new GatewayConfigReloadSupersededError();
-            }
-            await opts.onConfigAccepted?.(currentConfig, ownership, currentSourceConfig, {
-              runtimeApplied: true,
-            });
-            if (!ownership.isCurrent()) {
-              throw new GatewayConfigReloadSupersededError();
-            }
-          });
+          await acceptCurrentRuntimeEcho(transactionEpoch);
           return;
         }
         lastAppliedWriteHash = null;
@@ -807,6 +825,9 @@ export function startGatewayConfigReloader(opts: {
       if (event.configPath !== opts.watchPath) {
         return;
       }
+      // A live writer notification owns any following watcher echo. Do not
+      // let the startup token discard its intent or prepared runtime metadata.
+      startupInternalWriteHash = null;
       opts.onConfigCandidateObserved?.();
       configWriteEpoch += 1;
       watcherIntentCandidate = null;

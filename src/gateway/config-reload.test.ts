@@ -970,7 +970,7 @@ describe("startGatewayConfigReloader", () => {
     await harness.reloader.stop();
   });
 
-  it("revalidates changed effective config when the persisted root hash is unchanged", async () => {
+  it("revalidates changed effective config when an accepted write hash is unchanged", async () => {
     const initialConfig = {
       gateway: { reload: { debounceMs: 0 }, port: 18_789 },
     } satisfies OpenClawConfig;
@@ -1000,9 +1000,20 @@ describe("startGatewayConfigReloader", () => {
     const harness = createReloaderHarness(readSnapshot, {
       initialConfig,
       initialCompareConfig: initialConfig,
-      initialInternalWriteHash: "unchanged-root-hash",
       onRestart,
     });
+
+    harness.emitWrite({
+      configPath: "/tmp/openclaw.json",
+      sourceConfig: initialConfig,
+      runtimeConfig: initialConfig,
+      persistedHash: "unchanged-root-hash",
+      revision: 1,
+      fingerprint: "runtime-unchanged-root-hash",
+      sourceFingerprint: "source-unchanged-root-hash",
+      writtenAtMs: Date.now(),
+    });
+    await vi.runAllTimersAsync();
 
     harness.watcher.emit("change");
     await vi.runAllTimersAsync();
@@ -1210,7 +1221,7 @@ describe("startGatewayConfigReloader", () => {
     await harness.reloader.stop();
   });
 
-  it("does not reaccept an invalid snapshot whose root hash matches the accepted write", async () => {
+  it("does not reaccept an invalid snapshot whose root hash matches the startup write", async () => {
     const initialConfig = {
       gateway: { reload: { debounceMs: 0 } },
     } satisfies OpenClawConfig;
@@ -2747,7 +2758,11 @@ describe("startGatewayConfigReloader", () => {
     });
     await vi.runAllTimersAsync();
 
-    expect(harness.onEffectiveConfigUnchanged).toHaveBeenCalledOnce();
+    expect(harness.onEffectiveConfigUnchanged).toHaveBeenCalledTimes(2);
+    expect(harness.onEffectiveConfigUnchanged.mock.calls.map((call) => call[2])).toEqual([
+      sourceConfig,
+      initialConfig,
+    ]);
     expect(rollbackSource).toHaveBeenCalledOnce();
 
     await harness.reloader.stop();
@@ -3439,14 +3454,15 @@ describe("startGatewayConfigReloader", () => {
     await harness.reloader.stop();
   });
 
-  it("dedupes the first watcher reread for startup internal writes", async () => {
+  it("dedupes only the first watcher reread for startup internal writes", async () => {
+    const startupConfig = {
+      gateway: { reload: { debounceMs: 0 }, auth: { mode: "token" as const, token: "startup" } },
+    } satisfies OpenClawConfig;
     const readSnapshot = vi
       .fn<() => Promise<ConfigFileSnapshot>>()
       .mockResolvedValueOnce(
         makeSnapshot({
-          config: {
-            gateway: { reload: { debounceMs: 0 }, auth: { mode: "token", token: "startup" } },
-          },
+          config: startupConfig,
           hash: "startup-internal-1",
         }),
       )
@@ -3455,10 +3471,11 @@ describe("startGatewayConfigReloader", () => {
           config: {
             gateway: { reload: { debounceMs: 0 }, port: 19001 },
           },
-          hash: "external-after-startup-1",
+          hash: "startup-internal-1",
         }),
       );
     const harness = createReloaderHarness(readSnapshot, {
+      initialConfig: startupConfig,
       initialInternalWriteHash: "startup-internal-1",
     });
 
@@ -3474,6 +3491,27 @@ describe("startGatewayConfigReloader", () => {
 
     expect(readSnapshot).toHaveBeenCalledTimes(2);
     expect(harness.onRestart).toHaveBeenCalledTimes(1);
+
+    await harness.reloader.stop();
+  });
+
+  it("preserves live writer intent before the startup watcher echo", async () => {
+    const readSnapshot = vi.fn(async () => makeZeroDebounceHookSnapshot("startup-internal-1"));
+    const harness = createReloaderHarness(readSnapshot, {
+      initialInternalWriteHash: "startup-internal-1",
+    });
+
+    harness.emitWrite({
+      ...makeZeroDebounceHookWrite("startup-internal-1"),
+      afterWrite: { mode: "restart", reason: "live writer owns startup hash" },
+    });
+    harness.watcher.emit("change");
+    await vi.runAllTimersAsync();
+
+    expect(harness.onRestart).toHaveBeenCalledOnce();
+    expect(harness.onRestart.mock.calls[0]?.[0].restartReasons).toContain(
+      "live writer owns startup hash",
+    );
 
     await harness.reloader.stop();
   });
