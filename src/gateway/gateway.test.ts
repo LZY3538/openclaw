@@ -308,12 +308,16 @@ describe("gateway e2e", () => {
           expect(getRuntimeConfig().channels?.whatsapp?.dmPolicy).toBe("open");
           expect(getRuntimeConfig().channels?.whatsapp?.allowFrom).toEqual(["*"]);
 
+          const sourceBeforePolicyEdit = getRuntimeConfigSourceSnapshot();
+          if (!sourceBeforePolicyEdit) {
+            throw new Error("expected an active runtime source snapshot");
+          }
           await writeConfigFile({
-            ...getRuntimeConfig(),
+            ...sourceBeforePolicyEdit,
             channels: {
-              ...getRuntimeConfig().channels,
+              ...sourceBeforePolicyEdit.channels,
               whatsapp: {
-                ...getRuntimeConfig().channels?.whatsapp,
+                ...sourceBeforePolicyEdit.channels?.whatsapp,
                 dmPolicy: "disabled",
               },
             },
@@ -326,8 +330,12 @@ describe("gateway e2e", () => {
             .toBe("disabled");
           expect(getRuntimeConfig().channels?.whatsapp?.dmPolicy).toBe("open");
 
+          const sourceBeforeUnrelatedWrite = getRuntimeConfigSourceSnapshot();
+          if (!sourceBeforeUnrelatedWrite) {
+            throw new Error("expected an active runtime source snapshot");
+          }
           await writeConfigFile({
-            ...getRuntimeConfig(),
+            ...sourceBeforeUnrelatedWrite,
             ui: { assistant: { name: "unrelated-managed-write" } },
           });
           const persistedAfterUnrelatedWrite = JSON.parse(
