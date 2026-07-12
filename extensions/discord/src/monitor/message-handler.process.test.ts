@@ -2197,6 +2197,21 @@ describe("processDiscordMessage draft streaming", () => {
     expect(deliverDiscordReply).toHaveBeenCalledTimes(1);
   });
 
+  it("retries stale preview cleanup at teardown after fresh final delivery", async () => {
+    const draftStream = createMockDraftStreamForTest();
+    draftStream.clear.mockImplementationOnce(async () => {});
+
+    await runSingleChunkFinalScenario({
+      streaming: { mode: "partial" },
+      maxLinesPerMessage: 5,
+    });
+
+    expect(deliverDiscordReply).toHaveBeenCalledTimes(1);
+    expect(getDeliveredFinalTexts()).toEqual(["Hello\nWorld"]);
+    expect(draftStream.clear).toHaveBeenCalledTimes(2);
+    expect(draftStream.messageId()).toBeUndefined();
+  });
+
   it("streams Discord tool progress by default when streaming is unset", async () => {
     const draftStream = createMockDraftStreamForTest();
 
