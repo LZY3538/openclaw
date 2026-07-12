@@ -726,6 +726,10 @@ function createReloaderHarness(
   options: {
     initialConfig?: OpenClawConfig;
     initialCompareConfig?: OpenClawConfig;
+    prepareConfigCandidate?: (params: {
+      runtimeConfig: OpenClawConfig;
+      sourceConfig: OpenClawConfig;
+    }) => { runtimeConfig: OpenClawConfig; compareConfig: OpenClawConfig };
     initialInternalWriteHash?: string | null;
     promoteSnapshot?: (snapshot: ConfigFileSnapshot, reason: string) => Promise<boolean>;
     initialPluginInstallRecords?: Record<string, PluginInstallRecord>;
@@ -806,6 +810,9 @@ function createReloaderHarness(
   const reloader = startGatewayConfigReloader({
     initialConfig,
     initialCompareConfig: options.initialCompareConfig,
+    ...(options.prepareConfigCandidate
+      ? { prepareConfigCandidate: options.prepareConfigCandidate }
+      : {}),
     initialInternalWriteHash: options.initialInternalWriteHash,
     readSnapshot,
     promoteSnapshot: options.promoteSnapshot,
@@ -1715,6 +1722,119 @@ describe("startGatewayConfigReloader", () => {
     );
     expect(harness.onNoopConfigCommit.mock.invocationCallOrder[0]).toBeLessThan(
       harness.onConfigApplied.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+    await harness.reloader.stop();
+  });
+
+  it("plans one immutable runtime override snapshot per candidate", async () => {
+    const initialConfig: OpenClawConfig = {
+      gateway: { reload: { debounceMs: 0 } },
+      identity: { name: "initial" },
+      messages: { visibleReplies: "automatic" },
+    };
+    let visibleRepliesOverride: "message_tool" | undefined;
+    const prepareConfigCandidate = vi.fn(({ runtimeConfig, sourceConfig }) => {
+      const override = visibleRepliesOverride;
+      const applyCapturedOverride = (config: OpenClawConfig): OpenClawConfig =>
+        override
+          ? { ...config, messages: { ...config.messages, visibleReplies: override } }
+          : config;
+      return {
+        runtimeConfig: applyCapturedOverride(runtimeConfig),
+        compareConfig: applyCapturedOverride(sourceConfig),
+      };
+    });
+    const readSnapshot = vi.fn();
+    const harness = createReloaderHarness(readSnapshot, {
+      initialConfig,
+      prepareConfigCandidate,
+    });
+    const makeOverrideWrite = (
+      config: OpenClawConfig,
+      persistedHash: string,
+    ): ConfigWriteNotification => ({
+      configPath: "/tmp/openclaw.json",
+      sourceConfig: config,
+      runtimeConfig: config,
+      persistedHash,
+      revision: 1,
+      fingerprint: `runtime-${persistedHash}`,
+      sourceFingerprint: `source-${persistedHash}`,
+      writtenAtMs: Date.now(),
+    });
+
+    visibleRepliesOverride = "message_tool";
+    const overrideSource: OpenClawConfig = {
+      ...initialConfig,
+      identity: { name: "override-active" },
+    };
+    harness.emitWrite(makeOverrideWrite(overrideSource, "override-active"));
+    await vi.runAllTimersAsync();
+
+    expect(harness.onNoopConfigCommit.mock.calls[0]?.[0].noopPaths).toContain(
+      "messages.visibleReplies",
+    );
+    expect(harness.onNoopConfigCommit.mock.calls[0]?.[1].messages?.visibleReplies).toBe(
+      "message_tool",
+    );
+
+    visibleRepliesOverride = undefined;
+    const resetSource: OpenClawConfig = {
+      ...initialConfig,
+      identity: { name: "override-reset" },
+    };
+    harness.emitWrite(makeOverrideWrite(resetSource, "override-reset"));
+    await vi.runAllTimersAsync();
+
+    expect(harness.onNoopConfigCommit.mock.calls[1]?.[0].noopPaths).toContain(
+      "messages.visibleReplies",
+    );
+    expect(harness.onNoopConfigCommit.mock.calls[1]?.[1].messages?.visibleReplies).toBe(
+      "automatic",
+    );
+    await harness.reloader.stop();
+  });
+
+  it("does not publish a restart-only hot-mode candidate through a later safe edit", async () => {
+    const initialConfig: OpenClawConfig = {
+      gateway: {
+        reload: { mode: "hot", debounceMs: 0 },
+        auth: { mode: "token", token: "old-token" },
+      },
+      logging: { level: "info" },
+    };
+    const makeWrite = (config: OpenClawConfig, persistedHash: string): ConfigWriteNotification => ({
+      configPath: "/tmp/openclaw.json",
+      sourceConfig: config,
+      runtimeConfig: config,
+      persistedHash,
+      revision: 1,
+      fingerprint: `runtime-${persistedHash}`,
+      sourceFingerprint: `source-${persistedHash}`,
+      writtenAtMs: Date.now(),
+    });
+    const harness = createReloaderHarness(vi.fn(), { initialConfig });
+    const restartOnlyConfig: OpenClawConfig = {
+      ...initialConfig,
+      gateway: {
+        ...initialConfig.gateway,
+        auth: { mode: "token", token: "new-token" },
+      },
+    };
+
+    harness.emitWrite(makeWrite(restartOnlyConfig, "restart-only"));
+    await vi.runAllTimersAsync();
+    harness.emitWrite(
+      makeWrite({ ...restartOnlyConfig, logging: { level: "debug" } }, "safe-after-restart"),
+    );
+    await vi.runAllTimersAsync();
+
+    expect(harness.onNoopConfigCommit).not.toHaveBeenCalled();
+    expect(harness.onHotReload).not.toHaveBeenCalled();
+    expect(harness.onRestart).not.toHaveBeenCalled();
+    expect(harness.log.warn).toHaveBeenCalledTimes(2);
+    expect(harness.log.warn).toHaveBeenLastCalledWith(
+      expect.stringContaining("gateway.auth.token"),
     );
     await harness.reloader.stop();
   });

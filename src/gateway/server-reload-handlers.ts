@@ -387,7 +387,12 @@ type ManagedGatewayConfigReloaderParams = Omit<
   };
   channelManager: GatewayChannelManager;
   activateRuntimeSecrets: ActivateRuntimeSecrets;
-  /** Reapplies process-lifetime startup overrides before each candidate is prepared. */
+  /** Applies one immutable effective config/compare snapshot before reload planning. */
+  prepareConfigCandidate?: (params: {
+    runtimeConfig: OpenClawConfig;
+    sourceConfig: OpenClawConfig;
+  }) => { runtimeConfig: OpenClawConfig; compareConfig: OpenClawConfig };
+  /** Reapplies fixed process-lifetime overlays before secrets preparation. */
   applyRuntimeConfigOverrides?: (config: OpenClawConfig) => OpenClawConfig;
   resolveSharedGatewaySessionGenerationForConfig: (config: OpenClawConfig) => string | undefined;
   sharedGatewaySessionGenerationState: SharedGatewaySessionGenerationState;
@@ -1649,6 +1654,9 @@ export function startManagedGatewayConfigReloader(
   const configReloader = startGatewayConfigReloader({
     initialConfig: params.initialConfig,
     initialCompareConfig: params.initialCompareConfig,
+    ...(params.prepareConfigCandidate
+      ? { prepareConfigCandidate: params.prepareConfigCandidate }
+      : {}),
     initialInternalWriteHash: params.initialInternalWriteHash,
     runTransaction: runWithGatewayIndependentRootWorkAdmission,
     readSnapshot: params.readSnapshot,

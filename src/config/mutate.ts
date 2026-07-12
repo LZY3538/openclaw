@@ -40,6 +40,7 @@ import { resolveConfigPath } from "./paths.js";
 import {
   createRuntimeConfigWriteNotification,
   finalizeRuntimeSnapshotWrite,
+  hasManagedRuntimeConfigWriteOwner,
   getRuntimeConfigSnapshot,
   getRuntimeConfigSnapshotRefreshHandler,
   getRuntimeConfigSourceSnapshot,
@@ -751,16 +752,20 @@ async function tryWriteSingleTopLevelIncludeMutation(params: {
       );
     }
 
+    const deferRuntimeActivation = hasManagedRuntimeConfigWriteOwner(params.snapshot.path);
     const notifyCommittedWrite = () => {
       const currentRuntimeConfig = getRuntimeConfigSnapshot();
-      if (!currentRuntimeConfig) {
+      const notificationRuntimeConfig = deferRuntimeActivation
+        ? refreshedSnapshot.runtimeConfig
+        : currentRuntimeConfig;
+      if (!notificationRuntimeConfig) {
         return;
       }
       notifyRuntimeConfigWriteListeners(
         createRuntimeConfigWriteNotification({
           configPath: params.snapshot.path,
           sourceConfig: refreshedSnapshot.sourceConfig,
-          runtimeConfig: currentRuntimeConfig,
+          runtimeConfig: notificationRuntimeConfig,
           persistedHash,
           afterWrite: params.afterWrite ?? params.writeOptions?.afterWrite,
         }),
@@ -774,6 +779,7 @@ async function tryWriteSingleTopLevelIncludeMutation(params: {
       loadFreshConfig: () => refreshedSnapshot.runtimeConfig,
       notifyCommittedWrite,
       preflightResult: runtimePreflightResult,
+      deferRuntimeActivation,
       formatRefreshError: (error) => formatErrorMessage(error),
       createRefreshError: (detail, cause) =>
         new Error(

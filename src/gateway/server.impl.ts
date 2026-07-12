@@ -90,7 +90,10 @@ import {
 } from "./methods/registry.js";
 import { isLoopbackHost } from "./net.js";
 import { createNodeReapprovalCoordinator } from "./node-reapproval-coordinator.js";
-import { resolveGatewayStartupPluginActivationConfig } from "./plugin-activation-runtime-config.js";
+import {
+  resolveGatewayReloadPluginActivationCandidate,
+  resolveGatewayStartupPluginActivationConfig,
+} from "./plugin-activation-runtime-config.js";
 import {
   listChannelPluginConfigTargetIds,
   pluginConfigTargetsChanged,
@@ -608,6 +611,27 @@ export async function startGatewayServer(
     }),
   );
   const configSnapshot = startupConfigLoad.snapshot;
+  const startupAuthOverride = opts.auth ? structuredClone(opts.auth) : undefined;
+  const startupTailscaleOverride = opts.tailscale ? structuredClone(opts.tailscale) : undefined;
+  // Seed before secrets activation so every active/rollback snapshot carries
+  // the same runtime-only browser origin baseline.
+  const controlUiSeed = minimalTestGateway
+    ? { config: configSnapshot.config, seededAllowedOrigins: false }
+    : await startupTrace.measure("control-ui.seed", () =>
+        maybeSeedControlUiAllowedOriginsAtStartup({
+          config: configSnapshot.config,
+          log,
+          runtimeBind: opts.bind,
+          runtimePort: port,
+        }),
+      );
+  const startupConfigSnapshot = controlUiSeed.seededAllowedOrigins
+    ? {
+        ...configSnapshot,
+        runtimeConfig: controlUiSeed.config,
+        config: controlUiSeed.config,
+      }
+    : configSnapshot;
 
   const emitSecretsStateEvent = (
     code: "SECRETS_RELOADER_DEGRADED" | "SECRETS_RELOADER_RECOVERED",
@@ -628,35 +652,33 @@ export async function startGatewayServer(
       : {}),
   });
 
-  let cfgAtStart: OpenClawConfig;
   let startupInternalWriteHash: string | null = null;
   let startupLastGoodSnapshot = configSnapshot;
   const startupActivationSourceConfig = configSnapshot.sourceConfig;
-  const applyStartupConfigOverrides = captureConfigOverrideApplier();
-  const startupRuntimeConfig = applyStartupConfigOverrides(configSnapshot.config);
+  const startupRuntimeConfig = captureConfigOverrideApplier()(startupConfigSnapshot.config);
   startupTrace.setConfig(startupRuntimeConfig);
   const { prepareGatewayStartupConfig } = await startupConfigModulePromise;
   const authBootstrap = await startupTrace.measure(
     "config.auth",
     () =>
       prepareGatewayStartupConfig({
-        configSnapshot,
-        authOverride: opts.auth,
-        tailscaleOverride: opts.tailscale,
+        configSnapshot: startupConfigSnapshot,
+        authOverride: startupAuthOverride,
+        tailscaleOverride: startupTailscaleOverride,
         activateRuntimeSecrets,
         log,
         measure: (name, run, measureOptions) => startupTrace.measure(name, run, measureOptions),
       }),
     { omitErrorMessage: true },
   );
-  cfgAtStart = authBootstrap.cfg;
+  const cfgAtStart = authBootstrap.cfg;
   startupTrace.setConfig(cfgAtStart);
   if (authBootstrap.generatedToken) {
     log.warn(formatRuntimeGatewayAuthTokenWarning());
   }
   const reloadAuthOverride = authBootstrap.generatedToken
-    ? mergeGatewayAuthConfig(opts.auth, { token: authBootstrap.generatedToken })
-    : opts.auth;
+    ? mergeGatewayAuthConfig(startupAuthOverride, { token: authBootstrap.generatedToken })
+    : startupAuthOverride;
   const diagnosticsEnabled = isDiagnosticsEnabled(cfgAtStart);
   setDiagnosticsEnabledForProcess(diagnosticsEnabled);
   if (diagnosticsEnabled) {
@@ -677,25 +699,12 @@ export async function startGatewayServer(
       getActiveGatewayRootWorkCount() +
       getActiveTaskCount(),
   );
-  // Unconditional startup migration: seed gateway.controlUi.allowedOrigins for existing
-  // non-loopback installs that upgraded to v2026.2.26+ without required origins.
-  const controlUiSeed = minimalTestGateway
-    ? { config: cfgAtStart, seededAllowedOrigins: false }
-    : await startupTrace.measure("control-ui.seed", () =>
-        maybeSeedControlUiAllowedOriginsAtStartup({
-          config: cfgAtStart,
-          log,
-          runtimeBind: opts.bind,
-          runtimePort: port,
-        }),
-      );
-  cfgAtStart = controlUiSeed.config;
   const seededControlUiAllowedOrigins = controlUiSeed.seededAllowedOrigins
     ? cfgAtStart.gateway?.controlUi?.allowedOrigins
     : undefined;
-  const applyStartupGatewayOverrides = (config: OpenClawConfig): OpenClawConfig => {
-    let runtimeConfig = applyStartupConfigOverrides(config);
-    if (reloadAuthOverride || opts.tailscale) {
+  const applyFixedGatewayOverlays = (config: OpenClawConfig): OpenClawConfig => {
+    let runtimeConfig = config;
+    if (reloadAuthOverride || startupTailscaleOverride) {
       runtimeConfig = {
         ...runtimeConfig,
         gateway: {
@@ -703,11 +712,11 @@ export async function startGatewayServer(
           ...(reloadAuthOverride
             ? { auth: mergeGatewayAuthConfig(runtimeConfig.gateway?.auth, reloadAuthOverride) }
             : {}),
-          ...(opts.tailscale
+          ...(startupTailscaleOverride
             ? {
                 tailscale: mergeGatewayTailscaleConfig(
                   runtimeConfig.gateway?.tailscale,
-                  opts.tailscale,
+                  startupTailscaleOverride,
                 ),
               }
             : {}),
@@ -730,6 +739,27 @@ export async function startGatewayServer(
       };
     }
     return runtimeConfig;
+  };
+  const prepareReloadCandidate = (params: {
+    runtimeConfig: OpenClawConfig;
+    sourceConfig: OpenClawConfig;
+  }) => {
+    const metadata = startupConfigLoad.pluginMetadataSnapshot;
+    const pluginCandidate = minimalTestGateway
+      ? { runtimeConfig: params.runtimeConfig, compareConfig: params.sourceConfig }
+      : resolveGatewayReloadPluginActivationCandidate({
+          ...params,
+          env: process.env,
+          ...(metadata?.manifestRegistry ? { manifestRegistry: metadata.manifestRegistry } : {}),
+          discovery: metadata?.discovery,
+        });
+    const applyCandidateOverrides = captureConfigOverrideApplier();
+    return {
+      runtimeConfig: applyFixedGatewayOverlays(
+        applyCandidateOverrides(pluginCandidate.runtimeConfig),
+      ),
+      compareConfig: applyCandidateOverrides(pluginCandidate.compareConfig),
+    };
   };
   // Keep the old startup-write suppression path intact for compatibility with
   // callers that may still report a write, but startup itself no longer mutates config.
@@ -838,8 +868,8 @@ export async function startGatewayServer(
       controlUiEnabled: opts.controlUiEnabled,
       openAiChatCompletionsEnabled: opts.openAiChatCompletionsEnabled,
       openResponsesEnabled: opts.openResponsesEnabled,
-      auth: opts.auth,
-      tailscale: opts.tailscale,
+      auth: startupAuthOverride,
+      tailscale: startupTailscaleOverride,
     });
   });
   const {
@@ -861,7 +891,7 @@ export async function startGatewayServer(
       authConfig:
         getActiveSecretsRuntimeConfigSnapshot()?.config.gateway?.auth ??
         getRuntimeConfig().gateway?.auth,
-      authOverride: opts.auth,
+      authOverride: startupAuthOverride,
       env: process.env,
       tailscaleMode,
     });
@@ -869,7 +899,7 @@ export async function startGatewayServer(
     resolveSharedGatewaySessionGeneration(
       resolveGatewayAuth({
         authConfig: config.gateway?.auth,
-        authOverride: opts.auth,
+        authOverride: startupAuthOverride,
         env: process.env,
         tailscaleMode,
       }),
@@ -884,7 +914,7 @@ export async function startGatewayServer(
     resolveSharedGatewaySessionGeneration(
       resolveGatewayAuth({
         authConfig: getRuntimeConfig().gateway?.auth,
-        authOverride: opts.auth,
+        authOverride: startupAuthOverride,
         env: process.env,
         tailscaleMode,
       }),
@@ -1942,7 +1972,8 @@ export async function startGatewayServer(
       watchPath: configSnapshot.path,
       readSnapshot: readConfigFileSnapshot,
       promoteSnapshot: promoteConfigSnapshotToLastKnownGood,
-      subscribeToWrites: registerConfigWriteListener,
+      subscribeToWrites: (listener) =>
+        registerConfigWriteListener(listener, { ownsRuntimeActivationFor: configSnapshot.path }),
       deps,
       broadcast,
       getState: () => ({
@@ -1989,7 +2020,8 @@ export async function startGatewayServer(
       acceptTerminalConfig: terminalLaunchPolicy.acceptConfig,
       channelManager,
       activateRuntimeSecrets,
-      applyRuntimeConfigOverrides: applyStartupGatewayOverrides,
+      prepareConfigCandidate: prepareReloadCandidate,
+      applyRuntimeConfigOverrides: applyFixedGatewayOverlays,
       resolveSharedGatewaySessionGenerationForConfig,
       sharedGatewaySessionGenerationState,
       clients,

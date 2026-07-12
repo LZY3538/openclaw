@@ -2,12 +2,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   finalizeRuntimeSnapshotWrite,
+  hasManagedRuntimeConfigWriteOwner,
   getRuntimeConfigSnapshotMetadata,
   getRuntimeConfigSourceSnapshot,
   getRuntimeConfigSnapshot,
   loadPinnedRuntimeConfig,
   notifyRuntimeConfigWriteListeners,
   registerRuntimeConfigWriteListener,
+  registerManagedRuntimeConfigWriteOwner,
   resetConfigRuntimeState,
   resolveRuntimeConfigCacheKey,
   selectApplicableRuntimeConfig,
@@ -327,5 +329,46 @@ describe("runtime snapshot state", () => {
         runtimeConfig: { gateway: { port: 19003 } },
       },
     ]);
+  });
+
+  it("scopes managed write ownership by path and reference count", () => {
+    const releaseA = registerManagedRuntimeConfigWriteOwner("/tmp/a.json");
+    const releaseA2 = registerManagedRuntimeConfigWriteOwner("/tmp/a.json");
+    const releaseB = registerManagedRuntimeConfigWriteOwner("/tmp/b.json");
+
+    expect(hasManagedRuntimeConfigWriteOwner("/tmp/a.json")).toBe(true);
+    expect(hasManagedRuntimeConfigWriteOwner("/tmp/b.json")).toBe(true);
+    releaseA();
+    expect(hasManagedRuntimeConfigWriteOwner("/tmp/a.json")).toBe(true);
+    releaseA2();
+    releaseA2();
+    expect(hasManagedRuntimeConfigWriteOwner("/tmp/a.json")).toBe(false);
+    expect(hasManagedRuntimeConfigWriteOwner("/tmp/b.json")).toBe(true);
+    releaseB();
+  });
+
+  it("defers raw runtime activation to a managed write owner", async () => {
+    const activeConfig: OpenClawConfig = { gateway: { port: 18789 } };
+    setRuntimeConfigSnapshot(activeConfig);
+    const notifyCommittedWrite = vi.fn();
+    const refresh = vi.fn(async () => true);
+    const loadFreshConfig = vi.fn(() => ({ gateway: { port: 19001 } }));
+    setRuntimeConfigSnapshotRefreshHandler({ refresh });
+
+    await finalizeRuntimeSnapshotWrite({
+      nextSourceConfig: { gateway: { port: 19001 } },
+      hadRuntimeSnapshot: true,
+      hadBothSnapshots: false,
+      loadFreshConfig,
+      notifyCommittedWrite,
+      deferRuntimeActivation: true,
+      formatRefreshError: (error) => String(error),
+      createRefreshError: (detail, cause) => new Error(detail, { cause }),
+    });
+
+    expect(getRuntimeConfigSnapshot()).toBe(activeConfig);
+    expect(refresh).not.toHaveBeenCalled();
+    expect(loadFreshConfig).not.toHaveBeenCalled();
+    expect(notifyCommittedWrite).toHaveBeenCalledOnce();
   });
 });

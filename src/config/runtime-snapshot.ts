@@ -93,6 +93,7 @@ let runtimeConfigSourceSnapshot: OpenClawConfig | null = null;
 let runtimeConfigSnapshotMetadata: RuntimeConfigSnapshotMetadata | null = null;
 let runtimeConfigSnapshotRevision = 0;
 let runtimeConfigSnapshotRefreshHandler: RuntimeConfigSnapshotRefreshHandler | null = null;
+const managedRuntimeConfigWriteOwners = new Map<string, number>();
 const runtimeConfigWriteListeners = new Set<(event: RuntimeConfigWriteNotification) => void>();
 
 function stableConfigStringify(value: unknown): string {
@@ -252,6 +253,30 @@ export function registerRuntimeConfigWriteListener(
   };
 }
 
+export function registerManagedRuntimeConfigWriteOwner(configPath: string): () => void {
+  managedRuntimeConfigWriteOwners.set(
+    configPath,
+    (managedRuntimeConfigWriteOwners.get(configPath) ?? 0) + 1,
+  );
+  let released = false;
+  return () => {
+    if (released) {
+      return;
+    }
+    released = true;
+    const remaining = (managedRuntimeConfigWriteOwners.get(configPath) ?? 1) - 1;
+    if (remaining > 0) {
+      managedRuntimeConfigWriteOwners.set(configPath, remaining);
+    } else {
+      managedRuntimeConfigWriteOwners.delete(configPath);
+    }
+  };
+}
+
+export function hasManagedRuntimeConfigWriteOwner(configPath: string): boolean {
+  return managedRuntimeConfigWriteOwners.has(configPath);
+}
+
 export function notifyRuntimeConfigWriteListeners(event: RuntimeConfigWriteNotification): void {
   for (const listener of runtimeConfigWriteListeners) {
     try {
@@ -301,7 +326,12 @@ export async function finalizeRuntimeSnapshotWrite(params: {
   createRefreshError: (detail: string, cause: unknown) => Error;
   formatRefreshError: (error: unknown) => string;
   preflightResult?: unknown;
+  deferRuntimeActivation?: boolean;
 }): Promise<void> {
+  if (params.deferRuntimeActivation) {
+    params.notifyCommittedWrite();
+    return;
+  }
   const refreshHandler = getRuntimeConfigSnapshotRefreshHandler();
   if (refreshHandler) {
     try {

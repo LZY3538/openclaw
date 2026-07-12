@@ -108,6 +108,7 @@ import {
   clearRuntimeConfigSnapshot as clearRuntimeConfigSnapshotState,
   createRuntimeConfigWriteNotification,
   finalizeRuntimeSnapshotWrite,
+  hasManagedRuntimeConfigWriteOwner,
   getRuntimeConfigSnapshotMetadata as getRuntimeConfigSnapshotMetadataState,
   getRuntimeConfigSnapshot as getRuntimeConfigSnapshotState,
   getRuntimeConfigSourceSnapshot as getRuntimeConfigSourceSnapshotState,
@@ -115,6 +116,7 @@ import {
   notifyRuntimeConfigWriteListeners,
   preflightRuntimeSnapshotWrite,
   registerRuntimeConfigWriteListener,
+  registerManagedRuntimeConfigWriteOwner,
   resetConfigRuntimeState as resetConfigRuntimeStateState,
   resolveRuntimeConfigCacheKey,
   selectApplicableRuntimeConfig,
@@ -144,6 +146,7 @@ export {
   selectApplicableRuntimeConfig,
   setRuntimeConfigSnapshotState as setRuntimeConfigSnapshot,
   setRuntimeConfigSnapshotRefreshHandlerState as setRuntimeConfigSnapshotRefreshHandler,
+  registerManagedRuntimeConfigWriteOwner,
 };
 
 // Re-export for backwards compatibility
@@ -2782,8 +2785,16 @@ export function clearConfigCache(): void {
 
 export function registerConfigWriteListener(
   listener: (event: ConfigWriteNotification) => void,
+  options: { ownsRuntimeActivationFor?: string } = {},
 ): () => void {
-  return registerRuntimeConfigWriteListener(listener);
+  const unregisterListener = registerRuntimeConfigWriteListener(listener);
+  const unregisterOwner = options.ownsRuntimeActivationFor
+    ? registerManagedRuntimeConfigWriteOwner(options.ownsRuntimeActivationFor)
+    : undefined;
+  return () => {
+    unregisterListener();
+    unregisterOwner?.();
+  };
 }
 
 export function loadConfig(options?: {
@@ -3010,12 +3021,14 @@ export async function writeConfigFile(
   // triggering a `plugins`-scoped restart of the gateway for changes that
   // never touched any plugin entry.
   let canonicalSourceConfig: OpenClawConfig = nextCfg;
+  let canonicalRuntimeConfig: OpenClawConfig = nextCfg;
   const envBeforeCanonicalRead = snapshotEnv(process.env);
   let envAfterCanonicalRead;
   try {
     const freshSnapshot = await io.readConfigFileSnapshot();
     if (freshSnapshot.exists && freshSnapshot.valid) {
       canonicalSourceConfig = freshSnapshot.sourceConfig;
+      canonicalRuntimeConfig = freshSnapshot.config;
     }
   } catch {
     // Best-effort; fall back to nextCfg so a transient read failure does not
@@ -3023,16 +3036,20 @@ export async function writeConfigFile(
   } finally {
     envAfterCanonicalRead = snapshotEnv(process.env);
   }
+  const deferRuntimeActivation = hasManagedRuntimeConfigWriteOwner(io.configPath);
   const notifyCommittedWrite = () => {
     const currentRuntimeConfig = getRuntimeConfigSnapshotState();
-    if (!currentRuntimeConfig) {
+    const notificationRuntimeConfig = deferRuntimeActivation
+      ? canonicalRuntimeConfig
+      : currentRuntimeConfig;
+    if (!notificationRuntimeConfig) {
       return;
     }
     notifyRuntimeConfigWriteListeners(
       createRuntimeConfigWriteNotification({
         configPath: io.configPath,
         sourceConfig: canonicalSourceConfig,
-        runtimeConfig: currentRuntimeConfig,
+        runtimeConfig: notificationRuntimeConfig,
         persistedHash: writeResult.persistedHash,
         afterWrite: options.afterWrite,
       }),
@@ -3051,6 +3068,7 @@ export async function writeConfigFile(
       notifyCommittedWrite,
       formatRefreshError: (error) => formatErrorMessage(error),
       preflightResult: runtimePreflightResult,
+      deferRuntimeActivation,
       createRefreshError: (detail, cause) =>
         new ConfigRuntimeRefreshError(
           `Config was written to ${io.configPath}, but runtime snapshot refresh failed: ${detail}`,

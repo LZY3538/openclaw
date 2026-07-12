@@ -12,6 +12,7 @@ import {
 } from "../config/config.js";
 import { resetConfigOverrides, setConfigOverride } from "../config/runtime-overrides.js";
 import { clearSessionStoreCacheForTest } from "../config/sessions/store.js";
+import type { GatewayAuthConfig, GatewayTailscaleConfig } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resetAgentRunContextForTest } from "../infra/agent-events.js";
 import { clearGatewaySubagentRuntime } from "../plugins/runtime/index.js";
@@ -211,12 +212,23 @@ describe("gateway e2e", () => {
           setConfigOverride("channels.whatsapp", { dmPolicy: "open", allowFrom: ["*"] }).ok,
         ).toBe(true);
       }
+      const callerAuthOverride: GatewayAuthConfig | undefined =
+        authSource === "explicit-override"
+          ? {
+              mode: "token" as const,
+              token: overrideToken,
+              rateLimit: { maxAttempts: 7 },
+            }
+          : undefined;
+      const callerTailscaleOverride: GatewayTailscaleConfig | undefined =
+        authSource === "explicit-override"
+          ? { mode: "off" as const, serviceName: "svc:startup" }
+          : undefined;
       const port = await getFreeGatewayPort();
       const server = await startGatewayServer(port, {
         bind: "loopback",
-        ...(authSource === "explicit-override"
-          ? { auth: { mode: "token" as const, token: overrideToken } }
-          : {}),
+        ...(callerAuthOverride ? { auth: callerAuthOverride } : {}),
+        ...(callerTailscaleOverride ? { tailscale: callerTailscaleOverride } : {}),
         controlUiEnabled: false,
       });
       const expectedToken =
@@ -235,8 +247,11 @@ describe("gateway e2e", () => {
         expect(health?.configReload?.hotReloadStatus).toBe("active");
 
         if (authSource === "runtime-overrides") {
-          expect(setConfigOverride("gateway.auth.token", `${overrideToken}-later`).ok).toBe(true);
-          expect(setConfigOverride("channels.whatsapp.dmPolicy", "pairing").ok).toBe(true);
+          expect(getRuntimeConfig().channels?.whatsapp?.dmPolicy).toBe("open");
+        } else if (callerAuthOverride && callerTailscaleOverride) {
+          callerAuthOverride.token = `${overrideToken}-mutated`;
+          callerAuthOverride.rateLimit!.maxAttempts = 99;
+          callerTailscaleOverride.serviceName = "svc:mutated";
         }
         await configIO.writeConfigFile({
           ...initialConfig,
@@ -246,9 +261,26 @@ describe("gateway e2e", () => {
           .poll(() => getRuntimeConfig().logging?.level, { timeout: 5_000, interval: 50 })
           .toBe("debug");
         expect(getRuntimeConfig().gateway?.auth?.token).toBe(expectedToken);
+        if (authSource === "explicit-override") {
+          expect(getRuntimeConfig().gateway?.auth?.rateLimit?.maxAttempts).toBe(7);
+          expect(getRuntimeConfig().gateway?.tailscale?.serviceName).toBe("svc:startup");
+        }
         if (authSource === "runtime-overrides") {
           expect(getRuntimeConfig().channels?.whatsapp?.dmPolicy).toBe("open");
           expect(getRuntimeConfig().channels?.whatsapp?.allowFrom).toEqual(["*"]);
+
+          const acceptedPort = getRuntimeConfig().gateway?.port;
+          await configIO.writeConfigFile({
+            ...initialConfig,
+            gateway: { ...initialConfig.gateway, port: port + 1 },
+            logging: { level: "warn" },
+          });
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, 50);
+          });
+          expect(getRuntimeConfig().gateway?.port).toBe(acceptedPort);
+          expect(getRuntimeConfig().logging?.level).toBe("debug");
+          expect(getRuntimeConfig().gateway?.auth?.token).toBe(expectedToken);
         }
 
         const reconnected = await connectGatewayClient({
@@ -291,6 +323,27 @@ describe("gateway e2e", () => {
 
       await configIO.writeConfigFile({
         ...initialConfig,
+        logging: { level: "debug" },
+      });
+      await expect
+        .poll(() => getRuntimeConfig().logging?.level, { timeout: 5_000, interval: 50 })
+        .toBe("debug");
+      expect(getRuntimeConfig().gateway?.controlUi?.allowedOrigins).toEqual(seededOrigins);
+
+      expect(setConfigOverride("logging.level", "warn").ok).toBe(true);
+      await configIO.writeConfigFile({
+        ...initialConfig,
+        identity: { name: "override-active" },
+        logging: { level: "debug" },
+      });
+      await expect
+        .poll(() => getRuntimeConfig().logging?.level, { timeout: 5_000, interval: 50 })
+        .toBe("warn");
+
+      resetConfigOverrides();
+      await configIO.writeConfigFile({
+        ...initialConfig,
+        identity: { name: "override-reset" },
         logging: { level: "debug" },
       });
       await expect

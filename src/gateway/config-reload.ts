@@ -129,6 +129,10 @@ function asPluginInstallConfig(records: PluginInstallRecords): OpenClawConfig {
 export function startGatewayConfigReloader(opts: {
   initialConfig: OpenClawConfig;
   initialCompareConfig?: OpenClawConfig;
+  prepareConfigCandidate?: (params: {
+    runtimeConfig: OpenClawConfig;
+    sourceConfig: OpenClawConfig;
+  }) => { runtimeConfig: OpenClawConfig; compareConfig: OpenClawConfig };
   initialInternalWriteHash?: string | null;
   readSnapshot: () => Promise<ConfigFileSnapshot>;
   /** Pauses restart emission synchronously when a matching disk candidate is observed. */
@@ -173,8 +177,14 @@ export function startGatewayConfigReloader(opts: {
   };
   watchPath: string;
 }): GatewayConfigReloader {
-  let currentConfig = opts.initialConfig;
-  let currentCompareConfig = opts.initialCompareConfig ?? opts.initialConfig;
+  const initialSourceConfig = opts.initialCompareConfig ?? opts.initialConfig;
+  const initialCandidate = opts.prepareConfigCandidate?.({
+    runtimeConfig: opts.initialConfig,
+    sourceConfig: initialSourceConfig,
+  });
+  let currentConfig = initialCandidate?.runtimeConfig ?? opts.initialConfig;
+  let currentCompareConfig = initialCandidate?.compareConfig ?? initialSourceConfig;
+  let currentSourceConfig = initialSourceConfig;
   let settings = resolveGatewayReloadSettings(currentConfig);
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let pending = false;
@@ -274,11 +284,17 @@ export function startGatewayConfigReloader(opts: {
   };
 
   const applySnapshot = async (
-    nextConfig: OpenClawConfig,
-    nextCompareConfig: OpenClawConfig,
+    candidateRuntimeConfig: OpenClawConfig,
+    nextSourceConfig: OpenClawConfig,
     afterWrite?: ConfigWriteNotification["afterWrite"],
     transactionEpoch = configWriteEpoch,
   ) => {
+    const preparedCandidate = opts.prepareConfigCandidate?.({
+      runtimeConfig: candidateRuntimeConfig,
+      sourceConfig: nextSourceConfig,
+    });
+    const nextConfig = preparedCandidate?.runtimeConfig ?? candidateRuntimeConfig;
+    const nextCompareConfig = preparedCandidate?.compareConfig ?? nextSourceConfig;
     let nextPluginInstallRecords = currentPluginInstallRecords;
     let committedRuntimeConfig: OpenClawConfig | null = null;
     const nextSettings = resolveGatewayReloadSettings(nextConfig);
@@ -291,6 +307,7 @@ export function startGatewayConfigReloader(opts: {
         committedRuntimeConfig = runtimeConfig;
         currentConfig = runtimeConfig;
         currentCompareConfig = nextCompareConfig;
+        currentSourceConfig = nextSourceConfig;
         currentPluginInstallRecords = nextPluginInstallRecords;
         settings = resolveGatewayReloadSettings(runtimeConfig);
         pendingRuntimeApplicationPlan = plan;
@@ -344,7 +361,7 @@ export function startGatewayConfigReloader(opts: {
     // prepares state that acceptance or restart policy may discard.
     await flushPendingRuntimeApplication();
     assertCurrent();
-    const commitReloadBaseline = async () => {
+    const commitReloadBaseline = async (options: { runtimeApplied?: boolean } = {}) => {
       assertCurrent();
       // A prior transaction may publish runtime state immediately before a
       // newer write supersedes it. Commit that runtime owner before accepting
@@ -354,9 +371,15 @@ export function startGatewayConfigReloader(opts: {
       await opts.onConfigAccepted?.(
         committedRuntimeConfig ?? nextConfig,
         ownership,
-        nextCompareConfig,
+        nextSourceConfig,
       );
       assertCurrent();
+      currentSourceConfig = nextSourceConfig;
+      if (options.runtimeApplied === false) {
+        // Persisted-but-skipped candidates are not runtime truth. Keep the
+        // effective baseline so a later safe edit cannot publish them indirectly.
+        return;
+      }
       currentConfig = committedRuntimeConfig ?? nextConfig;
       currentCompareConfig = nextCompareConfig;
       currentPluginInstallRecords = nextPluginInstallRecords;
@@ -383,7 +406,7 @@ export function startGatewayConfigReloader(opts: {
     opts.log.info(`config change detected; evaluating reload (${changedPaths.join(", ")})`);
     if (followUp.mode === "none") {
       opts.log.info(`config reload skipped by writer intent (${followUp.reason})`);
-      await commitReloadBaseline();
+      await commitReloadBaseline({ runtimeApplied: false });
       return;
     }
     const plan = buildGatewayReloadPlan(changedPaths, {
@@ -392,14 +415,14 @@ export function startGatewayConfigReloader(opts: {
     });
     if (nextSettings.mode === "off") {
       opts.log.info("config reload disabled (gateway.reload.mode=off)");
-      await commitReloadBaseline();
+      await commitReloadBaseline({ runtimeApplied: false });
       return;
     }
     if (isNoopReloadPlan(plan) && !followUp.requiresRestart) {
       await opts.onConfigChange?.(plan, nextConfig);
       // No-op plans still change the runtime config snapshot. Commit before
       // marking applied so getRuntimeConfig() readers do not stay stale until restart.
-      await opts.onNoopConfigCommit(plan, nextConfig, ownership, nextCompareConfig);
+      await opts.onNoopConfigCommit(plan, nextConfig, ownership, nextSourceConfig);
       assertCurrent();
       await applyCurrentRuntimePlan(plan, nextConfig);
       await commitReloadBaseline();
@@ -412,14 +435,14 @@ export function startGatewayConfigReloader(opts: {
         restartReasons: [...plan.restartReasons, followUp.reason],
       };
       await opts.onConfigChange?.(restartPlan, nextConfig);
-      await prepareRestart(restartPlan, nextConfig, ownership, nextCompareConfig);
+      await prepareRestart(restartPlan, nextConfig, ownership, nextSourceConfig);
       await commitReloadBaseline();
       return;
     }
     if (nextSettings.mode === "restart") {
       const restartPlan = { ...plan, restartGateway: true };
       await opts.onConfigChange?.(restartPlan, nextConfig);
-      await prepareRestart(restartPlan, nextConfig, ownership, nextCompareConfig);
+      await prepareRestart(restartPlan, nextConfig, ownership, nextSourceConfig);
       await commitReloadBaseline();
       return;
     }
@@ -430,17 +453,17 @@ export function startGatewayConfigReloader(opts: {
             ", ",
           )})`,
         );
-        await commitReloadBaseline();
+        await commitReloadBaseline({ runtimeApplied: false });
         return;
       }
       await opts.onConfigChange?.(plan, nextConfig);
-      await prepareRestart(plan, nextConfig, ownership, nextCompareConfig);
+      await prepareRestart(plan, nextConfig, ownership, nextSourceConfig);
       await commitReloadBaseline();
       return;
     }
 
     await opts.onConfigChange?.(plan, nextConfig);
-    await opts.onHotReload(plan, nextConfig, ownership, nextCompareConfig);
+    await opts.onHotReload(plan, nextConfig, ownership, nextSourceConfig);
     assertCurrent();
     await applyCurrentRuntimePlan(plan, nextConfig);
     await commitReloadBaseline();
@@ -582,7 +605,7 @@ export function startGatewayConfigReloader(opts: {
         const matchesAcceptedEffectiveConfig =
           snapshot.valid &&
           snapshot.hash === lastAppliedWriteHash &&
-          diffConfigPaths(currentCompareConfig, snapshot.sourceConfig).length === 0;
+          diffConfigPaths(currentSourceConfig, snapshot.sourceConfig).length === 0;
         if (matchesAcceptedEffectiveConfig) {
           const ownership: GatewayConfigReloadTransactionOwnership = {
             isCurrent: () => configWriteEpoch === transactionEpoch,
@@ -593,7 +616,7 @@ export function startGatewayConfigReloader(opts: {
             if (!ownership.isCurrent()) {
               throw new GatewayConfigReloadSupersededError();
             }
-            await opts.onConfigAccepted?.(currentConfig, ownership, currentCompareConfig);
+            await opts.onConfigAccepted?.(currentConfig, ownership, currentSourceConfig);
             if (!ownership.isCurrent()) {
               throw new GatewayConfigReloadSupersededError();
             }
