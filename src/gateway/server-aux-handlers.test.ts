@@ -253,10 +253,7 @@ describe("gateway aux handlers", () => {
     const prepared = createSnapshot(
       slackZaloDiscordConfig("new-slack-secret", "new-zalo-secret", "unchanged-discord-token"),
     );
-    const activateRuntimeSecrets = vi.fn().mockImplementation(async () => {
-      activateSecretsRuntimeSnapshot(prepared);
-      return prepared;
-    });
+    const activateRuntimeSecrets = vi.fn().mockResolvedValue(prepared);
     const { reload, respond, startChannel, stopChannel } =
       createSecretsReloadHarnessWithChannelMocks({
         activateRuntimeSecrets,
