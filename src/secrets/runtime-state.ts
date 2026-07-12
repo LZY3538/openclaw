@@ -517,13 +517,13 @@ function mergeRollbackAuthStoreCredentials(
         includeMain: mutationLineage[agentDir]?.state.includeMain === true,
       }),
     );
-    const baselineProfileMutated = Object.keys(baselineStore?.profiles ?? {}).some((profileId) => {
+    const profileOwnerMutated = Object.keys(baselineStore?.profiles ?? {}).some((profileId) => {
       const decision = getProfileMutationDecision({
         agentDir,
         profileId,
         mutationLineage,
       });
-      return decision.status !== "unchanged";
+      return decision.status !== "unchanged" || decision.candidateStatus !== "unchanged";
     });
     if (!currentStore) {
       if (
@@ -531,7 +531,7 @@ function mergeRollbackAuthStoreCredentials(
         baselineStore &&
         storeMutationStatus === "unchanged" &&
         stateMutationStatus === "unchanged" &&
-        !baselineProfileMutated
+        !profileOwnerMutated
       ) {
         next[agentDir] = structuredClone(baselineStore);
       } else {
@@ -619,8 +619,14 @@ function mergeRollbackAuthStoreCredentials(
         isDeepStrictEqual(baselineRef, currentRef) &&
         !hasSameSecretProviderDefinition(baselineRef, configs)
       ) {
-        credential = baselineCredential;
-        selectedSource = baselineStore;
+        if (currentOwner !== profileMutationDecision.candidateOwner) {
+          invalidateStore = true;
+          credential = undefined;
+          selectedSource = undefined;
+        } else {
+          credential = baselineCredential;
+          selectedSource = baselineStore;
+        }
       }
       if (credential && selectedSource) {
         profiles[profileId] = structuredClone(credential);
