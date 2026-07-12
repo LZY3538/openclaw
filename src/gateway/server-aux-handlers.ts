@@ -70,10 +70,11 @@ async function activateSecretsRuntimeSnapshotIfCurrent(
 async function restoreSecretsRuntimeSnapshotIfCurrent(
   snapshot: PreparedSecretsRuntimeSnapshot,
   expectedRevision: number,
+  ownedSnapshot: PreparedSecretsRuntimeSnapshot,
   options?: { onActivated?: () => void },
 ): Promise<number | null> {
   const runtime = await import("../secrets/runtime.js");
-  if (!runtime.restoreSecretsRuntimeSnapshotIfCurrent(snapshot, expectedRevision)) {
+  if (!runtime.restoreSecretsRuntimeSnapshotIfCurrent(snapshot, expectedRevision, ownedSnapshot)) {
     return null;
   }
   options?.onActivated?.();
@@ -368,6 +369,7 @@ export function createGatewayAuxHandlers(params: {
                   await restoreSecretsRuntimeSnapshotIfCurrent(
                     transaction.previousSnapshot,
                     transaction.publishedSnapshotRevision,
+                    transaction.prepared,
                     {
                       onActivated: () => {
                         generationRestored = replaceOwnedSharedGatewaySessionGenerationState(

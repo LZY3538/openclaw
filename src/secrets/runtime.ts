@@ -278,21 +278,25 @@ export function activateSecretsRuntimeSnapshot(snapshot: PreparedSecretsRuntimeS
 export function activateSecretsRuntimeSnapshotIfCurrent(
   snapshot: PreparedSecretsRuntimeSnapshot,
   expectedRevision: number,
+  options?: { preserveActivationLineage?: boolean },
 ): boolean {
   return activateSecretsRuntimeSnapshotStateIfCurrent({
     ...createSecretsRuntimeSnapshotActivation(snapshot),
     expectedRevision,
+    preserveActivationLineage: options?.preserveActivationLineage,
   });
 }
 
-/** Restores an owned predecessor without accepting unrelated credential mutations. */
+/** Restores an owned predecessor while retaining changes after candidate preparation. */
 export function restoreSecretsRuntimeSnapshotIfCurrent(
   snapshot: PreparedSecretsRuntimeSnapshot,
   expectedRevision: number,
+  ownedSnapshot: PreparedSecretsRuntimeSnapshot,
 ): boolean {
   return restoreSecretsRuntimeSnapshotStateIfCurrent({
     ...createSecretsRuntimeSnapshotActivation(snapshot),
     expectedRevision,
+    ownedSnapshot,
   });
 }
 
@@ -508,7 +512,11 @@ export async function refreshActiveProviderAuthRuntimeSnapshot(): Promise<boolea
     };
     // The pinned config read and revision claim are synchronous: preserve gateway-owned
     // runtime mutations while preventing a concurrently prepared secrets snapshot from winning.
-    if (activateSecretsRuntimeSnapshotIfCurrent(refreshedSnapshot, candidate.expectedRevision)) {
+    if (
+      activateSecretsRuntimeSnapshotIfCurrent(refreshedSnapshot, candidate.expectedRevision, {
+        preserveActivationLineage: true,
+      })
+    ) {
       return true;
     }
   }

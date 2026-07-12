@@ -121,10 +121,11 @@ async function activateSecretsRuntimeSnapshotIfCurrent(
 async function restoreSecretsRuntimeSnapshotIfCurrent(
   snapshot: PreparedSecretsRuntimeSnapshot,
   expectedRevision: number,
+  ownedSnapshot: PreparedSecretsRuntimeSnapshot,
   options?: { onActivated?: () => void },
 ): Promise<boolean> {
   const runtime = await import("../secrets/runtime.js");
-  if (!runtime.restoreSecretsRuntimeSnapshotIfCurrent(snapshot, expectedRevision)) {
+  if (!runtime.restoreSecretsRuntimeSnapshotIfCurrent(snapshot, expectedRevision, ownedSnapshot)) {
     return false;
   }
   options?.onActivated?.();
@@ -519,10 +520,10 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
     const channelsStoppedBeforePluginReload = new Set<ChannelKind>();
     let activePluginChannelsAfterReload: ReadonlySet<ChannelKind> | null = null;
     let pluginReloadAborted = false;
+    const isLifecycleReloadAborted = () =>
+      abortGeneration !== undefined && myGeneration <= abortGeneration;
     const isPluginReloadAborted = () =>
-      pluginReloadAborted ||
-      !isTransactionCurrent() ||
-      (abortGeneration !== undefined && myGeneration <= abortGeneration);
+      pluginReloadAborted || !isTransactionCurrent() || isLifecycleReloadAborted();
     let runtimeCommitted = false;
     let recoveryRestartScheduled = false;
     const shouldSkipChannelRestart = () =>
@@ -670,6 +671,13 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
             );
           },
         });
+      const failPluginChannelRollback = (reason: string, failures: ChannelKind[]): never => {
+        const error = new Error(
+          `plugin reload cancellation rollback failed for: ${failures.join(", ")}`,
+        );
+        scheduleRecoveryRestart(`plugin channel rollback after ${reason}`, error);
+        throw error;
+      };
       const stopChannelsBeforePluginReplace = async (channels: ReadonlySet<ChannelKind>) => {
         for (const channel of channels) {
           channelsToRestart.add(channel);
@@ -703,6 +711,9 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
             params.logChannels.info(`stopping ${channel} channel before plugin reload`);
             channelsStoppedBeforePluginReload.add(channel);
             await params.stopChannel(channel, undefined, { manual: false });
+            if (isPluginReloadAborted()) {
+              pluginReloadAborted = true;
+            }
           },
           onFailure: (channel, err) => {
             params.logChannels.error(
@@ -711,13 +722,14 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
           },
         });
         if (pluginReloadAborted) {
+          if (isLifecycleReloadAborted()) {
+            return;
+          }
           const rollbackFailures = await restartStoppedPluginChannels(
             "cancelled plugin reload pre-stop",
           );
           if (rollbackFailures.length > 0) {
-            throw new Error(
-              `plugin reload cancellation rollback failed for: ${rollbackFailures.join(", ")}`,
-            );
+            failPluginChannelRollback("cancelled plugin reload pre-stop", rollbackFailures);
           }
           return;
         }
@@ -725,12 +737,11 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
           const rollbackFailures = await restartStoppedPluginChannels(
             "failed plugin reload pre-stop",
           );
-          const rollbackSuffix =
-            rollbackFailures.length > 0
-              ? `; rollback restart failed for: ${rollbackFailures.join(", ")}`
-              : "";
+          if (rollbackFailures.length > 0) {
+            failPluginChannelRollback("failed plugin reload pre-stop", rollbackFailures);
+          }
           throw new Error(
-            `failed to stop channels before plugin reload: ${stopFailures.join(", ")}${rollbackSuffix}`,
+            `failed to stop channels before plugin reload: ${stopFailures.join(", ")}`,
           );
         }
       };
@@ -750,10 +761,7 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
               "failed plugin runtime publication",
             );
             if (rollbackFailures.length > 0) {
-              throw new Error(
-                `${formatErrorMessage(err)}; rollback restart failed for: ${rollbackFailures.join(", ")}`,
-                { cause: err },
-              );
+              failPluginChannelRollback("failed plugin runtime publication", rollbackFailures);
             }
             throw err;
           }
@@ -762,13 +770,13 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
         }
         if (pluginReloadResult.cancelled) {
           pluginReloadAborted = true;
-          const rollbackFailures = await restartStoppedPluginChannels(
-            "cancelled plugin runtime publication",
-          );
-          if (rollbackFailures.length > 0) {
-            throw new Error(
-              `plugin reload cancellation rollback failed for: ${rollbackFailures.join(", ")}`,
+          if (!isLifecycleReloadAborted()) {
+            const rollbackFailures = await restartStoppedPluginChannels(
+              "cancelled plugin runtime publication",
             );
+            if (rollbackFailures.length > 0) {
+              failPluginChannelRollback("cancelled plugin runtime publication", rollbackFailures);
+            }
           }
         }
         // beforeReplace may have set pluginReloadAborted inside reloadPlugins;
@@ -1736,6 +1744,7 @@ export function startManagedGatewayConfigReloader(
                       snapshotRestored = await restoreSecretsRuntimeSnapshotIfCurrent(
                         previousSnapshot,
                         publishedSnapshotRevision ?? -1,
+                        prepared,
                         {
                           onActivated: () => {
                             generationRestored = restoreOwnedCurrentSharedGatewaySessionGeneration(
@@ -1841,6 +1850,7 @@ export function startManagedGatewayConfigReloader(
               snapshotRestored = await restoreSecretsRuntimeSnapshotIfCurrent(
                 previousSnapshot,
                 publishedSnapshotRevision,
+                prepared,
                 {
                   onActivated: () => {
                     generationRestored = restoreOwnedCurrentSharedGatewaySessionGeneration(

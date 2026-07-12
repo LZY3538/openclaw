@@ -142,7 +142,7 @@ describe("promoteAuthProfileInOrder", () => {
     );
   });
 
-  it("rebuilds a derived custom-agent snapshot after main OAuth rotation", async () => {
+  it("rebuilds a derived custom-agent snapshot after locked main OAuth rotation", async () => {
     await withAuthProfileTestState(
       "openclaw-auth-profile-main-inheritance-",
       async ({ agentDirFor }) => {
@@ -168,23 +168,39 @@ describe("promoteAuthProfileInOrder", () => {
               "anthropic:custom": {
                 type: "api_key",
                 provider: "anthropic",
-                key: "sk-custom",
+                keyRef: { source: "env", provider: "default", id: "ANTHROPIC_API_KEY" },
+                key: "sk-custom-resolved",
               },
             },
           },
           customAgentDir,
         );
+        const derivedStore = loadAuthProfileStoreForRuntime(customAgentDir);
+        const customCredential = derivedStore.profiles["anthropic:custom"];
+        if (customCredential?.type !== "api_key") {
+          throw new Error("expected custom API-key profile");
+        }
+        customCredential.key = "sk-custom-resolved";
         replaceRuntimeAuthProfileStoreSnapshots([
           {
             agentDir: customAgentDir,
-            store: loadAuthProfileStoreForRuntime(customAgentDir),
+            store: derivedStore,
           },
         ]);
         expect(
           getRuntimeAuthProfileStoreSnapshot(customAgentDir)?.profiles["openai:default"],
         ).toMatchObject({ access: "old" });
 
-        saveAuthProfileStore(mainStore("new"));
+        await upsertAuthProfileWithLock({
+          profileId: "openai:default",
+          credential: {
+            type: "oauth",
+            provider: "openai",
+            access: "new",
+            refresh: "refresh-new",
+            expires: Date.now() + 60_000,
+          },
+        });
 
         expect(
           getRuntimeAuthProfileStoreSnapshot(customAgentDir)?.profiles["openai:default"],
@@ -193,7 +209,10 @@ describe("promoteAuthProfileInOrder", () => {
           ensureAuthProfileStoreWithoutExternalProfiles(customAgentDir).profiles[
             "anthropic:custom"
           ],
-        ).toMatchObject({ key: "sk-custom" });
+        ).toMatchObject({
+          key: "sk-custom-resolved",
+          keyRef: { source: "env", provider: "default", id: "ANTHROPIC_API_KEY" },
+        });
       },
       { clearOAuthDir: true },
     );
