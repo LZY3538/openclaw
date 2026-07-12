@@ -11,6 +11,10 @@ import {
 } from "../agents/bash-process-registry.js";
 import { createProcessSessionFixture } from "../agents/bash-process-registry.test-helpers.js";
 import type { ConfigWriteNotification } from "../config/config.js";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   consumeGatewaySigusr1RestartIntent,
@@ -189,9 +193,13 @@ vi.mock("../agents/main-session-restart-recovery.js", () => ({
   markRestartAbortedMainSessions: hoisted.markRestartAbortedMainSessions,
 }));
 
-vi.mock("../config/config.js", () => ({
-  getRuntimeConfig: () => hoisted.runtimeConfig.value,
-}));
+vi.mock("../config/config.js", async () => {
+  const actual = await vi.importActual<typeof import("../config/config.js")>("../config/config.js");
+  return {
+    ...actual,
+    getRuntimeConfig: () => hoisted.runtimeConfig.value,
+  };
+});
 
 vi.mock("../agents/model-catalog.js", () => ({
   loadModelCatalog: (params: { config: OpenClawConfig }) => {
@@ -380,6 +388,7 @@ function createManagedRestartSequenceHarness() {
       terminal: { enabled: true },
     },
   } as OpenClawConfig;
+  setRuntimeConfigSnapshot(initialConfig, initialConfig);
   const deferredConfig = {
     gateway: {
       port: 18790,
@@ -663,6 +672,7 @@ afterEach(() => {
   hoisted.disposeAllSessionMcpRuntimes.mockResolvedValue(undefined);
   hoisted.buildGatewayCronService.mockClear();
   clearSecretsRuntimeSnapshot();
+  clearRuntimeConfigSnapshot();
 });
 
 async function runManagedOwnershipScenario(params: {
@@ -3344,7 +3354,7 @@ describe("gateway Gmail hot reload handlers", () => {
     });
     expect(getActiveSecretsRuntimeSnapshot()?.sourceConfig).toEqual(nextConfig);
     expect(acceptTerminalConfig).toHaveBeenCalledWith({
-      retireRejectedRestart: false,
+      retireRejectedRestart: true,
     });
     expect(heartbeatRunner.updateConfig).not.toHaveBeenCalled();
     await reloader.stop();
@@ -3372,6 +3382,8 @@ describe("gateway Gmail hot reload handlers", () => {
     const writeListenerRef: { current: ((event: ConfigWriteNotification) => void) | null } = {
       current: null,
     };
+    let snapshotConfig = initialConfig;
+    let snapshotHash = "initial";
     const activateRuntimeSecrets = vi.fn(async (config: OpenClawConfig) => ({
       sourceConfig: config,
       config,
@@ -3386,7 +3398,21 @@ describe("gateway Gmail hot reload handlers", () => {
       initialCompareConfig: initialConfig,
       initialInternalWriteHash: null,
       watchPath: "/tmp/openclaw.json",
-      readSnapshot: vi.fn() as never,
+      readSnapshot: vi.fn(async () => ({
+        path: "/tmp/openclaw.json",
+        exists: true,
+        raw: "{}",
+        parsed: snapshotConfig,
+        sourceConfig: snapshotConfig,
+        resolved: snapshotConfig,
+        valid: true,
+        runtimeConfig: snapshotConfig,
+        config: snapshotConfig,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+        hash: snapshotHash,
+      })) as never,
       promoteSnapshot: promoteSnapshot as never,
       subscribeToWrites: ((listener: (event: ConfigWriteNotification) => void) => {
         writeListenerRef.current = listener;
@@ -3436,6 +3462,8 @@ describe("gateway Gmail hot reload handlers", () => {
       if (!listener) {
         throw new Error("Expected config write listener to be registered");
       }
+      snapshotConfig = config;
+      snapshotHash = hash;
       revision += 1;
       listener({
         configPath: "/tmp/openclaw.json",
@@ -3539,7 +3567,7 @@ describe("gateway Gmail hot reload handlers", () => {
       }
     };
     const activateRuntimeSecrets = vi.fn(async (config: OpenClawConfig) => {
-      if (config === rejectedConfig) {
+      if (config.gateway?.port === rejectedConfig.gateway?.port) {
         throw new Error("restart secrets preflight failed");
       }
       return {
@@ -3552,6 +3580,14 @@ describe("gateway Gmail hot reload handlers", () => {
       };
     });
     const requestRecoveryRestart = vi.fn(() => ({ status: "emitted" as const }));
+    activateSecretsRuntimeSnapshot({
+      sourceConfig: initialConfig,
+      config: initialConfig,
+      authStores: [],
+      authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
+      warnings: [],
+      webTools: createEmptyRuntimeWebToolsMetadata(),
+    });
     const reloader = startManagedGatewayConfigReloader({
       minimalTestGateway: false,
       initialConfig,
@@ -3713,6 +3749,11 @@ describe("gateway Gmail hot reload handlers", () => {
       await expect(revertPromotion).resolves.toBe("accepted-a-plus-logging");
       expect(harness.terminalPolicy.isEnabled()).toBe(false);
       expect(harness.activateRuntimeSecrets).toHaveBeenNthCalledWith(3, acceptedWithLogging, {
+        reason: "reload",
+        activate: false,
+        includeAuthStoreRefs: undefined,
+      });
+      expect(harness.activateRuntimeSecrets).toHaveBeenNthCalledWith(4, acceptedWithLogging, {
         reason: "restart-check",
         activate: false,
       });
@@ -3720,7 +3761,7 @@ describe("gateway Gmail hot reload handlers", () => {
         diffConfigPaths(harness.initialConfig, harness.deferredConfig),
       );
       expect(harness.requestRecoveryRestart.mock.calls).toEqual([
-        [`config reload: ${deferredPlan.restartReasons.join(", ")}`],
+        [`config reload: ${deferredPlan.restartReasons.join(", ")}`, undefined],
       ]);
     } finally {
       hoisted.activeTaskBlockers.length = 0;
@@ -3763,7 +3804,7 @@ describe("gateway Gmail hot reload handlers", () => {
     expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
     expect(harness.promoteSnapshot).not.toHaveBeenCalled();
     expect(harness.logReload.error).toHaveBeenCalledWith(
-      "config restart failed: GatewayConfigReloadSupersededError: config reload superseded by a newer config write",
+      "config restart failed: GatewayConfigReloadSupersededError: config reload superseded by a newer runtime config source",
     );
   });
 
@@ -3966,7 +4007,7 @@ describe("gateway Gmail hot reload handlers", () => {
         activate: false,
       });
       expect(harness.requestRecoveryRestart.mock.calls).toEqual([
-        [`config reload: ${deferredPlan.restartReasons.join(", ")}`],
+        [`config reload: ${deferredPlan.restartReasons.join(", ")}`, undefined],
       ]);
     } finally {
       releaseEmissionPreflight();
@@ -4886,8 +4927,7 @@ describe("gateway plugin hot reload handlers", () => {
         isAborted?: () => boolean;
       }): Promise<GatewayPluginReloadResult> => {
         await params.beforeReplace(new Set(["discord"]));
-        abortPendingChannelReloads();
-        expect(params.isAborted?.()).toBe(true);
+        expect(params.isAborted?.()).toBe(false);
         return { restartChannels: new Set(), activeChannels: new Set(), cancelled: true };
       },
     );
@@ -5445,7 +5485,6 @@ describe("deferred channel reload abort generation", () => {
 
     expect(requestRecoveryRestart).toHaveBeenCalledWith(
       expect.stringContaining("hot reload recovery: plugin channel rollback"),
-      undefined,
     );
   });
 
@@ -5493,12 +5532,22 @@ describe("deferred channel reload abort generation", () => {
   it("does not mark a managed reload applied when restart aborts its deferral", async () => {
     const initialConfig = {
       gateway: { reload: { debounceMs: 0 } },
-      channels: { whatsapp: { enabled: true } },
+      channels: { whatsapp: { enabled: true, selfChatMode: false } },
     } as OpenClawConfig;
     const nextConfig = {
       gateway: { reload: { debounceMs: 0 } },
-      channels: { whatsapp: { enabled: false } },
+      channels: { whatsapp: { enabled: true, selfChatMode: true } },
     } as OpenClawConfig;
+    const whatsappPlugin = {
+      ...createChannelTestPluginBase({ id: "whatsapp" }),
+      reload: {
+        configPrefixes: ["channels.whatsapp.selfChatMode"],
+        noopPrefixes: ["channels.whatsapp"],
+      },
+    };
+    const registry = createTestRegistry([
+      { pluginId: "whatsapp", plugin: whatsappPlugin, source: "test" },
+    ]);
     const writeListenerRef: { current: ((event: ConfigWriteNotification) => void) | null } = {
       current: null,
     };
@@ -5509,6 +5558,7 @@ describe("deferred channel reload abort generation", () => {
       warn: vi.fn(),
       error: vi.fn(),
     };
+    pinActivePluginChannelRegistry(registry);
     const reloader = startManagedGatewayConfigReloader({
       minimalTestGateway: false,
       initialConfig,
@@ -5606,6 +5656,7 @@ describe("deferred channel reload abort generation", () => {
       if (!reloaderStopped) {
         await reloader.stop();
       }
+      releasePinnedPluginChannelRegistry(registry);
     }
   });
 
