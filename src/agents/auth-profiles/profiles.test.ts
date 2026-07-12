@@ -12,6 +12,7 @@ import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-d
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { AUTH_STORE_VERSION } from "./constants.js";
+import { testing as externalAuthTesting } from "./external-auth.js";
 import { loadPersistedAuthProfileStore } from "./persisted.js";
 import {
   clearLastGoodProfileWithLock,
@@ -26,6 +27,7 @@ import {
   loadAuthProfileStoreWithoutExternalProfiles,
   replaceRuntimeAuthProfileStoreSnapshots,
   saveAuthProfileStore,
+  testing as storeTesting,
 } from "./store.js";
 import type { AuthProfileStore } from "./types.js";
 
@@ -259,17 +261,24 @@ describe("promoteAuthProfileInOrder", () => {
           { agentDir: customAgentDir, store: runtimeStore },
         ]);
 
-        await upsertAuthProfileWithLock({
-          agentDir: customAgentDir,
-          profileId: "openai:local",
-          credential: {
-            type: "oauth",
-            provider: "openai",
-            access: "local-new",
-            refresh: "local-refresh-new",
-            expires: Date.now() + 120_000,
-          },
+        externalAuthTesting.setResolveExternalAuthProfilesForTest(() => {
+          throw new Error("external auth hook must not run during postcommit rebuild");
         });
+        try {
+          await upsertAuthProfileWithLock({
+            agentDir: customAgentDir,
+            profileId: "openai:local",
+            credential: {
+              type: "oauth",
+              provider: "openai",
+              access: "local-new",
+              refresh: "local-refresh-new",
+              expires: Date.now() + 120_000,
+            },
+          });
+        } finally {
+          externalAuthTesting.resetResolveExternalAuthProfilesForTest();
+        }
 
         expect(
           getRuntimeAuthProfileStoreSnapshot(customAgentDir)?.profiles["anthropic:inherited"],
@@ -283,6 +292,26 @@ describe("promoteAuthProfileInOrder", () => {
       },
       { clearOAuthDir: true },
     );
+  });
+
+  it("clears runtime snapshots when postcommit publication throws", () => {
+    replaceRuntimeAuthProfileStoreSnapshots([
+      {
+        store: {
+          version: AUTH_STORE_VERSION,
+          profiles: {
+            "openai:default": { type: "api_key", provider: "openai", key: "sk-runtime" },
+          },
+        },
+      },
+    ]);
+
+    expect(
+      storeTesting.publishRuntimeSnapshotsAfterCommit(() => {
+        throw new Error("postcommit publication failed");
+      }),
+    ).toBe(false);
+    expect(getRuntimeAuthProfileStoreSnapshot()).toBeUndefined();
   });
 
   it("marks newly saved runtime snapshot profiles as persisted", async () => {

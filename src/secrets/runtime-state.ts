@@ -139,12 +139,30 @@ function mergeRollbackValue(previous: unknown, candidate: unknown, current: unkn
   return merged;
 }
 
-function hasSameSecretProviderDefinition(
-  ref: SecretRef,
-  secrets: Array<OpenClawConfig["secrets"]>,
-): boolean {
-  const definition = secrets[0]?.providers?.[ref.provider];
-  return secrets.every((entry) => isDeepStrictEqual(entry?.providers?.[ref.provider], definition));
+function hasSameSecretProviderDefinition(ref: SecretRef, configs: OpenClawConfig[]): boolean {
+  const definition = configs[0]?.secrets?.providers?.[ref.provider];
+  if (
+    !configs.every((config) =>
+      isDeepStrictEqual(config.secrets?.providers?.[ref.provider], definition),
+    )
+  ) {
+    return false;
+  }
+  if (!definition || !("pluginIntegration" in definition)) {
+    return true;
+  }
+  const pluginId = definition.pluginIntegration.pluginId;
+  const dependency = (config: OpenClawConfig) => ({
+    enabled: config.plugins?.enabled,
+    allowed: config.plugins?.allow ? config.plugins.allow.includes(pluginId) : undefined,
+    denied: config.plugins?.deny?.includes(pluginId) ?? false,
+    load: config.plugins?.load,
+    bundledDiscovery: config.plugins?.bundledDiscovery,
+    entry: config.plugins?.entries?.[pluginId],
+    install: config.plugins?.installs?.[pluginId],
+  });
+  const previous = dependency(configs[0]!);
+  return configs.every((config) => isDeepStrictEqual(dependency(config), previous));
 }
 
 function preserveResolvedSecretRefValues(
@@ -152,15 +170,15 @@ function preserveResolvedSecretRefValues(
   currentSource: unknown,
   current: unknown,
   restored: unknown,
-  secrets: OpenClawConfig["secrets"],
-  currentSecrets: OpenClawConfig["secrets"],
+  sourceConfig: OpenClawConfig,
+  currentSourceConfig: OpenClawConfig,
 ): unknown {
-  const sourceRef = coerceSecretRef(source, secrets?.defaults);
+  const sourceRef = coerceSecretRef(source, sourceConfig.secrets?.defaults);
   if (sourceRef) {
-    const currentRef = coerceSecretRef(currentSource, currentSecrets?.defaults);
+    const currentRef = coerceSecretRef(currentSource, currentSourceConfig.secrets?.defaults);
     return currentRef &&
       isDeepStrictEqual(sourceRef, currentRef) &&
-      hasSameSecretProviderDefinition(sourceRef, [secrets, currentSecrets])
+      hasSameSecretProviderDefinition(sourceRef, [sourceConfig, currentSourceConfig])
       ? structuredClone(current)
       : restored;
   }
@@ -172,8 +190,8 @@ function preserveResolvedSecretRefValues(
         Array.isArray(currentSource) ? currentSource[index] : undefined,
         current[index],
         next[index],
-        secrets,
-        currentSecrets,
+        sourceConfig,
+        currentSourceConfig,
       );
     }
     return next;
@@ -186,8 +204,8 @@ function preserveResolvedSecretRefValues(
         isRecord(currentSource) ? currentSource[key] : undefined,
         current[key],
         next[key],
-        secrets,
-        currentSecrets,
+        sourceConfig,
+        currentSourceConfig,
       );
     }
     return next;
@@ -200,9 +218,9 @@ function preserveResolvedAuthStoreSecretValues(
   candidate: Record<string, AuthProfileStore>,
   restored: Record<string, AuthProfileStore>,
   current: Record<string, AuthProfileStore>,
-  previousSecrets: OpenClawConfig["secrets"],
-  candidateSecrets: OpenClawConfig["secrets"],
-  currentSecrets: OpenClawConfig["secrets"],
+  previousConfig: OpenClawConfig,
+  candidateConfig: OpenClawConfig,
+  currentConfig: OpenClawConfig,
 ): Record<string, AuthProfileStore> {
   const next = structuredClone(restored);
   for (const [agentDir, store] of Object.entries(next)) {
@@ -226,9 +244,9 @@ function preserveResolvedAuthStoreSecretValues(
         isDeepStrictEqual(credential.keyRef, candidateCredential.keyRef) &&
         isDeepStrictEqual(credential.keyRef, currentCredential.keyRef) &&
         hasSameSecretProviderDefinition(credential.keyRef, [
-          previousSecrets,
-          candidateSecrets,
-          currentSecrets,
+          previousConfig,
+          candidateConfig,
+          currentConfig,
         ]) &&
         currentCredential.key !== undefined
       ) {
@@ -243,9 +261,9 @@ function preserveResolvedAuthStoreSecretValues(
         isDeepStrictEqual(credential.tokenRef, candidateCredential.tokenRef) &&
         isDeepStrictEqual(credential.tokenRef, currentCredential.tokenRef) &&
         hasSameSecretProviderDefinition(credential.tokenRef, [
-          previousSecrets,
-          candidateSecrets,
-          currentSecrets,
+          previousConfig,
+          candidateConfig,
+          currentConfig,
         ]) &&
         currentCredential.token !== undefined
       ) {
@@ -256,7 +274,36 @@ function preserveResolvedAuthStoreSecretValues(
   return next;
 }
 
-function preserveLiveAuthStoreCredentials(
+function preserveLiveAuthStoreBookkeeping(
+  restored: Record<string, AuthProfileStore>,
+  current: Record<string, AuthProfileStore>,
+): Record<string, AuthProfileStore> {
+  const next = structuredClone(restored);
+  for (const [agentDir, store] of Object.entries(next)) {
+    const currentStore = current[agentDir];
+    if (!currentStore) {
+      continue;
+    }
+    if (currentStore.order === undefined) {
+      delete store.order;
+    } else {
+      store.order = structuredClone(currentStore.order);
+    }
+    if (currentStore.lastGood === undefined) {
+      delete store.lastGood;
+    } else {
+      store.lastGood = structuredClone(currentStore.lastGood);
+    }
+    if (currentStore.usageStats === undefined) {
+      delete store.usageStats;
+    } else {
+      store.usageStats = structuredClone(currentStore.usageStats);
+    }
+  }
+  return next;
+}
+
+function preserveLiveAuthStoreRemovals(
   restored: Record<string, AuthProfileStore>,
   current: Record<string, AuthProfileStore>,
 ): Record<string, AuthProfileStore> {
@@ -268,11 +315,8 @@ function preserveLiveAuthStoreCredentials(
       continue;
     }
     for (const profileId of Object.keys(store.profiles)) {
-      const currentCredential = currentStore.profiles[profileId];
-      if (currentCredential === undefined) {
+      if (currentStore.profiles[profileId] === undefined) {
         delete store.profiles[profileId];
-      } else {
-        store.profiles[profileId] = structuredClone(currentCredential);
       }
     }
   }
@@ -408,23 +452,26 @@ export function restoreSecretsRuntimeSnapshotStateIfCurrent(
   const currentAuthStores = Object.fromEntries(
     listRuntimeAuthProfileStoreSnapshots().map((entry) => [entry.agentDir, entry.store]),
   );
-  let restoredAuthStores = mergeRollbackValue(
+  let mergedAuthStores = mergeRollbackValue(
     baselineAuthStores,
     candidateAuthStores,
     currentAuthStores,
   ) as Record<string, AuthProfileStore>;
   const currentCredentialsRevision = getRuntimeAuthProfileStoreCredentialsRevision();
   if (activeSnapshot.authStoreCredentialsRevision !== currentCredentialsRevision) {
-    restoredAuthStores = preserveLiveAuthStoreCredentials(restoredAuthStores, currentAuthStores);
+    mergedAuthStores = preserveLiveAuthStoreRemovals(mergedAuthStores, currentAuthStores);
   }
-  restoredAuthStores = preserveResolvedAuthStoreSecretValues(
-    baselineAuthStores,
-    candidateAuthStores,
-    restoredAuthStores,
+  const restoredAuthStores = preserveLiveAuthStoreBookkeeping(
+    preserveResolvedAuthStoreSecretValues(
+      baselineAuthStores,
+      candidateAuthStores,
+      mergedAuthStores,
+      currentAuthStores,
+      params.snapshot.sourceConfig,
+      params.ownedSnapshot.sourceConfig,
+      activeSnapshot.sourceConfig,
+    ),
     currentAuthStores,
-    params.snapshot.sourceConfig.secrets,
-    params.ownedSnapshot.sourceConfig.secrets,
-    activeSnapshot.sourceConfig.secrets,
   );
   const restoredSourceConfig = mergeRollbackValue(
     params.snapshot.sourceConfig,
@@ -436,8 +483,8 @@ export function restoreSecretsRuntimeSnapshotStateIfCurrent(
     activeSnapshot.sourceConfig,
     activeSnapshot.config,
     mergeRollbackValue(params.snapshot.config, params.ownedSnapshot.config, activeSnapshot.config),
-    restoredSourceConfig.secrets,
-    activeSnapshot.sourceConfig.secrets,
+    restoredSourceConfig,
+    activeSnapshot.sourceConfig,
   ) as OpenClawConfig;
   return activateSecretsRuntimeSnapshotStateIfCurrent({
     ...params,

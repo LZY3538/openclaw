@@ -139,6 +139,22 @@ type ExternalCliSyncResult = {
   cacheable: boolean;
 };
 
+function publishRuntimeSnapshotsAfterCommit(publish: (() => void) | undefined): boolean {
+  if (!publish) {
+    return true;
+  }
+  try {
+    publish();
+    return true;
+  } catch (err) {
+    clearRuntimeAuthProfileStoreSnapshotsImpl();
+    log.warn("auth profile store committed but runtime snapshot publication failed", { err });
+    return false;
+  }
+}
+
+export const testing = { publishRuntimeSnapshotsAfterCommit };
+
 function resolvePersistedLoadOptions(
   options: Pick<LoadAuthProfileStoreOptions, "allowKeychainPrompt" | "database"> | undefined,
 ): { allowKeychainPrompt?: boolean; database?: OpenClawAgentDatabase } {
@@ -326,11 +342,12 @@ function maybeSyncPersistedExternalCliAuthProfiles(params: {
     return { store: synced, cacheable: true };
   }
 
+  // External CLI sync writes only profiles that still match the loaded
+  // baseline, avoiding overwrite of concurrent local auth changes.
+  let publishRuntimeSnapshots: (() => void) | undefined;
+  let result: ExternalCliSyncResult;
   try {
-    // External CLI sync writes only profiles that still match the loaded
-    // baseline, avoiding overwrite of concurrent local auth changes.
-    let publishRuntimeSnapshots: (() => void) | undefined;
-    const result = runAuthProfileWriteTransaction(params.agentDir, (database) => {
+    result = runAuthProfileWriteTransaction(params.agentDir, (database) => {
       const latestStore = loadPersistedAuthProfileStore(params.agentDir, {
         ...resolvePersistedLoadOptions(params.options),
         database,
@@ -363,14 +380,15 @@ function maybeSyncPersistedExternalCliAuthProfiles(params: {
       }
       return { store: latestStore, cacheable: true };
     });
-    publishRuntimeSnapshots?.();
-    return result;
   } catch (err) {
     log.warn("skipped persisted external cli auth sync because auth store write failed", {
       err,
     });
     return { store: params.store, cacheable: false };
   }
+  return publishRuntimeSnapshotsAfterCommit(publishRuntimeSnapshots)
+    ? result
+    : { store: result.store, cacheable: false };
 }
 
 function shouldKeepProfileInLocalStore(params: {
@@ -774,9 +792,10 @@ export async function updateAuthProfileStoreWithLock(params: {
   saveOptions?: SaveAuthProfileStoreOptions;
   updater: (store: AuthProfileStore) => boolean;
 }): Promise<AuthProfileStore | null> {
+  let publishRuntimeSnapshots: (() => void) | undefined;
+  let store: AuthProfileStore;
   try {
-    let publishRuntimeSnapshots: (() => void) | undefined;
-    const store = runAuthProfileWriteTransaction(params.agentDir, (database) => {
+    store = runAuthProfileWriteTransaction(params.agentDir, (database) => {
       const loadedStore = loadAuthProfileStoreForAgent(params.agentDir, {
         database,
         readOnly: true,
@@ -793,11 +812,11 @@ export async function updateAuthProfileStoreWithLock(params: {
       }
       return loadedStore;
     });
-    publishRuntimeSnapshots?.();
-    return store;
   } catch {
     return null;
   }
+  publishRuntimeSnapshotsAfterCommit(publishRuntimeSnapshots);
+  return store;
 }
 
 /** Load the main auth profile store with runtime external profiles overlaid. */
@@ -1112,11 +1131,7 @@ export function saveAuthProfileStore(
     }
     if (hasRuntimeAuthProfileStoreSnapshot(agentDir)) {
       const existingRuntimeStore = getRuntimeAuthProfileStoreSnapshot(agentDir);
-      const refreshed = loadAuthProfileStoreForRuntime(agentDir, {
-        readOnly: true,
-        syncExternalCli: false,
-        externalCli: { mode: "none" },
-      });
+      const refreshed = loadAuthProfileStoreWithoutExternalProfiles(agentDir);
       const materialized = existingRuntimeStore
         ? preserveResolvedSecretBackedCredentials({
             next: refreshed,
@@ -1134,11 +1149,7 @@ export function saveAuthProfileStore(
       );
     }
     for (const derived of derivedSnapshots) {
-      const refreshed = loadAuthProfileStoreForRuntime(derived.agentDir, {
-        readOnly: true,
-        syncExternalCli: false,
-        externalCli: { mode: "none" },
-      });
+      const refreshed = loadAuthProfileStoreWithoutExternalProfiles(derived.agentDir);
       const materialized = preserveResolvedSecretBackedCredentials({
         next: refreshed,
         existing: derived.store,
