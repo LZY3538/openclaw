@@ -90,7 +90,9 @@ import {
 } from "./subagent-registry-run-manager.js";
 import {
   clearSubagentRunsReadCacheForTest,
+  getSubagentRunsSnapshotForController,
   getSubagentRunsSnapshotForRead,
+  getSubagentRunsSnapshotForRequester,
   persistSubagentRunsToDisk,
   persistSubagentRunsToDiskOrThrow,
   restoreSubagentRunsFromDisk,
@@ -134,6 +136,8 @@ type SubagentRegistryDeps = {
   captureSubagentCompletionReply: SubagentAnnounceModule["captureSubagentCompletionReply"];
   cleanupBrowserSessionsForLifecycleEnd: typeof cleanupBrowserSessionsForLifecycleEnd;
   getSubagentRunsSnapshotForRead: typeof getSubagentRunsSnapshotForRead;
+  getSubagentRunsSnapshotForRequester: typeof getSubagentRunsSnapshotForRequester;
+  getSubagentRunsSnapshotForController: typeof getSubagentRunsSnapshotForController;
   getRuntimeConfig: typeof getRuntimeConfig;
   onAgentEvent: typeof onAgentEvent;
   persistSubagentRunsToDisk: typeof persistSubagentRunsToDisk;
@@ -175,6 +179,8 @@ const defaultSubagentRegistryDeps: SubagentRegistryDeps = {
   cleanupBrowserSessionsForLifecycleEnd: async (params) =>
     (await loadCleanupBrowserSessionsForLifecycleEnd())(params),
   getSubagentRunsSnapshotForRead,
+  getSubagentRunsSnapshotForRequester,
+  getSubagentRunsSnapshotForController,
   getRuntimeConfig,
   onAgentEvent,
   persistSubagentRunsToDisk,
@@ -1903,7 +1909,11 @@ export function listSubagentRunsForRequester(
   requesterSessionKey: string,
   options?: { requesterRunId?: string },
 ): SubagentRunRecord[] {
-  return listRunsForRequesterFromRuns(subagentRuns, requesterSessionKey, options);
+  return listRunsForRequesterFromRuns(
+    subagentRegistryDeps.getSubagentRunsSnapshotForRequester(subagentRuns, requesterSessionKey),
+    requesterSessionKey,
+    options,
+  );
 }
 
 export function leasePendingAgentSteeringItems(params: {
@@ -1970,7 +1980,7 @@ export { prependAgentSteeringPrompt };
 
 export function listSubagentRunsForController(controllerSessionKey: string): SubagentRunRecord[] {
   return listRunsForControllerFromRuns(
-    subagentRegistryDeps.getSubagentRunsSnapshotForRead(subagentRuns),
+    subagentRegistryDeps.getSubagentRunsSnapshotForController(subagentRuns, controllerSessionKey),
     controllerSessionKey,
   );
 }

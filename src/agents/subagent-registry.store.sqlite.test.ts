@@ -11,6 +11,8 @@ import {
 import { withEnvAsync } from "../test-utils/env.js";
 import {
   loadSubagentRegistryFromSqlite,
+  loadSubagentRunsForControllerFromSqlite,
+  loadSubagentRunsForRequesterFromSqlite,
   saveSubagentRegistryToSqlite,
 } from "./subagent-registry.store.sqlite.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
@@ -119,6 +121,135 @@ describe("subagent registry sqlite store", () => {
       saveSubagentRegistryToSqlite(new Map([[second.runId, second]]));
 
       expect([...loadSubagentRegistryFromSqlite().keys()]).toEqual(["run-two"]);
+    });
+  });
+
+  it("scoped requester query returns only matching requester_session_key rows", async () => {
+    await withTempStateEnv(async () => {
+      const matching = createRun({
+        runId: "run-match",
+        childSessionKey: "agent:main:subagent:match",
+        requesterSessionKey: "agent:main:target",
+      });
+      const other = createRun({
+        runId: "run-other",
+        childSessionKey: "agent:main:subagent:other",
+        requesterSessionKey: "agent:main:other",
+      });
+
+      saveSubagentRegistryToSqlite(
+        new Map([
+          [matching.runId, matching],
+          [other.runId, other],
+        ]),
+      );
+
+      const result = loadSubagentRunsForRequesterFromSqlite("agent:main:target");
+      expect(result.map((r) => r.runId).toSorted()).toEqual(["run-match"]);
+    });
+  });
+
+  it("scoped requester query returns empty for unknown requester key", async () => {
+    await withTempStateEnv(async () => {
+      saveSubagentRegistryToSqlite(new Map([["run-one", createRun({ runId: "run-one" })]]));
+
+      expect(loadSubagentRunsForRequesterFromSqlite("unknown-key")).toEqual([]);
+    });
+  });
+
+  it("scoped requester query returns empty for blank key", async () => {
+    await withTempStateEnv(async () => {
+      saveSubagentRegistryToSqlite(new Map([["run-one", createRun({ runId: "run-one" })]]));
+
+      expect(loadSubagentRunsForRequesterFromSqlite("")).toEqual([]);
+    });
+  });
+
+  it("scoped controller query returns rows with matching controller_session_key", async () => {
+    await withTempStateEnv(async () => {
+      const direct = createRun({
+        runId: "run-direct",
+        childSessionKey: "agent:main:subagent:direct",
+        controllerSessionKey: "agent:main:ctrl",
+        requesterSessionKey: "agent:main:different",
+      });
+      const other = createRun({
+        runId: "run-other2",
+        childSessionKey: "agent:main:subagent:other2",
+        controllerSessionKey: "agent:main:other-ctrl",
+        requesterSessionKey: "agent:main:different",
+      });
+
+      saveSubagentRegistryToSqlite(
+        new Map([
+          [direct.runId, direct],
+          [other.runId, other],
+        ]),
+      );
+
+      const result = loadSubagentRunsForControllerFromSqlite("agent:main:ctrl");
+      expect(result.map((r) => r.runId).toSorted()).toEqual(["run-direct"]);
+    });
+  });
+
+  it("scoped controller query falls back to requester_session_key when controller is null", async () => {
+    await withTempStateEnv(async () => {
+      const noController = createRun({
+        runId: "run-no-ctrl",
+        childSessionKey: "agent:main:subagent:noc",
+        controllerSessionKey: undefined,
+        requesterSessionKey: "agent:main:target",
+      });
+      const withController = createRun({
+        runId: "run-with-ctrl",
+        childSessionKey: "agent:main:subagent:withc",
+        controllerSessionKey: "agent:main:other",
+        requesterSessionKey: "agent:main:target",
+      });
+
+      saveSubagentRegistryToSqlite(
+        new Map([
+          [noController.runId, noController],
+          [withController.runId, withController],
+        ]),
+      );
+
+      const result = loadSubagentRunsForControllerFromSqlite("agent:main:target");
+      expect(result.map((r) => r.runId).toSorted()).toEqual(["run-no-ctrl"]);
+    });
+  });
+
+  it("scoped controller query combines explicit controller and null-controller requester fallback", async () => {
+    await withTempStateEnv(async () => {
+      const explicitCtrl = createRun({
+        runId: "run-explicit",
+        childSessionKey: "agent:main:subagent:explicit",
+        controllerSessionKey: "agent:main:ctrl",
+        requesterSessionKey: "agent:main:other",
+      });
+      const nullCtrl = createRun({
+        runId: "run-null",
+        childSessionKey: "agent:main:subagent:null",
+        controllerSessionKey: undefined,
+        requesterSessionKey: "agent:main:ctrl",
+      });
+      const noMatch = createRun({
+        runId: "run-nope",
+        childSessionKey: "agent:main:subagent:nope",
+        controllerSessionKey: "agent:main:third",
+        requesterSessionKey: "agent:main:fourth",
+      });
+
+      saveSubagentRegistryToSqlite(
+        new Map([
+          [explicitCtrl.runId, explicitCtrl],
+          [nullCtrl.runId, nullCtrl],
+          [noMatch.runId, noMatch],
+        ]),
+      );
+
+      const result = loadSubagentRunsForControllerFromSqlite("agent:main:ctrl");
+      expect(result.map((r) => r.runId).toSorted()).toEqual(["run-explicit", "run-null"]);
     });
   });
 

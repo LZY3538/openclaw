@@ -5,6 +5,8 @@
  */
 import {
   loadSubagentRegistryFromSqlite,
+  loadSubagentRunsForControllerFromSqlite,
+  loadSubagentRunsForRequesterFromSqlite,
   saveSubagentRegistryToSqlite,
 } from "./subagent-registry.store.sqlite.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
@@ -110,6 +112,81 @@ export function getSubagentRunsSnapshotForRead(
   }
   for (const [runId, entry] of inMemoryRuns.entries()) {
     merged.set(runId, entry);
+  }
+  return merged;
+}
+
+/**
+ * Scoped snapshot for a single requester session key.
+ *
+ * Loads only persisted rows matching the requester instead of hydrating the
+ * entire registry, then overlays in-memory runs that also match.
+ */
+export function getSubagentRunsSnapshotForRequester(
+  inMemoryRuns: Map<string, SubagentRunRecord>,
+  requesterSessionKey: string,
+): Map<string, SubagentRunRecord> {
+  const key = requesterSessionKey.trim();
+  if (!key) {
+    return new Map();
+  }
+  const merged = new Map<string, SubagentRunRecord>();
+  const shouldReadDisk =
+    process.env.OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_DISK === "1" ||
+    !(process.env.VITEST || process.env.NODE_ENV === "test");
+  if (shouldReadDisk) {
+    try {
+      for (const entry of loadSubagentRunsForRequesterFromSqlite(key)) {
+        merged.set(entry.runId, entry);
+      }
+    } catch {
+      // Ignore disk read failures and fall back to local memory.
+    }
+  }
+  for (const [runId, entry] of inMemoryRuns.entries()) {
+    if (entry.requesterSessionKey === key) {
+      merged.set(runId, entry);
+    }
+  }
+  return merged;
+}
+
+function resolveControllerSessionKey(entry: SubagentRunRecord): string {
+  return entry.controllerSessionKey?.trim() || entry.requesterSessionKey;
+}
+
+/**
+ * Scoped snapshot for a single controller session key.
+ *
+ * Loads only persisted rows matching the controller (including the fallback
+ * from null controller to requester key), then overlays in-memory runs that
+ * also match through the same resolution.
+ */
+export function getSubagentRunsSnapshotForController(
+  inMemoryRuns: Map<string, SubagentRunRecord>,
+  controllerSessionKey: string,
+): Map<string, SubagentRunRecord> {
+  const key = controllerSessionKey.trim();
+  if (!key) {
+    return new Map();
+  }
+  const merged = new Map<string, SubagentRunRecord>();
+  const shouldReadDisk =
+    process.env.OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_DISK === "1" ||
+    !(process.env.VITEST || process.env.NODE_ENV === "test");
+  if (shouldReadDisk) {
+    try {
+      for (const entry of loadSubagentRunsForControllerFromSqlite(key)) {
+        merged.set(entry.runId, entry);
+      }
+    } catch {
+      // Ignore disk read failures and fall back to local memory.
+    }
+  }
+  for (const [runId, entry] of inMemoryRuns.entries()) {
+    if (resolveControllerSessionKey(entry) === key) {
+      merged.set(runId, entry);
+    }
   }
   return merged;
 }

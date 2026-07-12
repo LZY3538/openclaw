@@ -264,6 +264,77 @@ function readSubagentRegistryRows(): SubagentRunSqliteRow[] {
   ).rows;
 }
 
+/** Loads subagent runs scoped to a single requester session key from sqlite. */
+export function loadSubagentRunsForRequesterFromSqlite(
+  requesterSessionKey: string,
+): SubagentRunRecord[] {
+  const key = requesterSessionKey.trim();
+  if (!key) {
+    return [];
+  }
+  const { db } = openOpenClawStateDatabase();
+  const stateDb = getNodeSqliteKysely<SubagentRegistryDatabase>(db);
+  const rows = executeSqliteQuerySync(
+    db,
+    stateDb
+      .selectFrom("subagent_runs")
+      .selectAll()
+      .where("requester_session_key", "=", key)
+      .orderBy("created_at", "asc")
+      .orderBy("run_id", "asc"),
+  ).rows;
+  const results: SubagentRunRecord[] = [];
+  for (const row of rows) {
+    const entry = rowToSubagentRunRecord(row);
+    if (entry) {
+      results.push(entry);
+    }
+  }
+  return results;
+}
+
+/**
+ * Loads subagent runs for a controller session key from sqlite.
+ *
+ * The controller query matches rows where controller_session_key equals the
+ * target key, and also rows where controller_session_key is null and
+ * requester_session_key equals the target key (the fallback path). This
+ * preserves the semantics of `resolveControllerSessionKey` at the SQL
+ * boundary so callers get correct results without a full-table scan.
+ */
+export function loadSubagentRunsForControllerFromSqlite(
+  controllerSessionKey: string,
+): SubagentRunRecord[] {
+  const key = controllerSessionKey.trim();
+  if (!key) {
+    return [];
+  }
+  const { db } = openOpenClawStateDatabase();
+  const stateDb = getNodeSqliteKysely<SubagentRegistryDatabase>(db);
+  const rows = executeSqliteQuerySync(
+    db,
+    stateDb
+      .selectFrom("subagent_runs")
+      .selectAll()
+      .where((eb) =>
+        eb.or([
+          eb("controller_session_key", "=", key),
+          eb.and([eb("controller_session_key", "is", null), eb("requester_session_key", "=", key)]),
+        ]),
+      )
+      .orderBy("created_at", "asc")
+      .orderBy("run_id", "asc"),
+  ).rows;
+  const results: SubagentRunRecord[] = [];
+  for (const row of rows) {
+    const entry = rowToSubagentRunRecord(row);
+    if (entry) {
+      results.push(entry);
+    }
+  }
+  return results;
+}
+
 function removeLegacySubagentRegistryFile(): void {
   try {
     fs.unlinkSync(resolveSubagentRegistryPath());
