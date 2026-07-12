@@ -9,7 +9,7 @@ import {
   clearConfigCache,
   clearRuntimeConfigSnapshot,
   getRuntimeConfig,
-  getRuntimeConfigSourceSnapshot,
+  getRuntimeConfigSnapshotMetadata,
   writeConfigFile,
 } from "../config/config.js";
 import { resetConfigOverrides, setConfigOverride } from "../config/runtime-overrides.js";
@@ -308,10 +308,8 @@ describe("gateway e2e", () => {
           expect(getRuntimeConfig().channels?.whatsapp?.dmPolicy).toBe("open");
           expect(getRuntimeConfig().channels?.whatsapp?.allowFrom).toEqual(["*"]);
 
-          const sourceBeforePolicyEdit = getRuntimeConfigSourceSnapshot();
-          if (!sourceBeforePolicyEdit) {
-            throw new Error("expected an active runtime source snapshot");
-          }
+          const sourceBeforePolicyEdit = (await configIO.readConfigFileSnapshot()).sourceConfig;
+          const revisionBeforePolicyEdit = getRuntimeConfigSnapshotMetadata()?.revision ?? -1;
           await writeConfigFile({
             ...sourceBeforePolicyEdit,
             channels: {
@@ -323,21 +321,29 @@ describe("gateway e2e", () => {
             },
           });
           await expect
-            .poll(() => getRuntimeConfigSourceSnapshot()?.channels?.whatsapp?.dmPolicy, {
+            .poll(() => getRuntimeConfigSnapshotMetadata()?.revision ?? -1, {
               timeout: 5_000,
               interval: 50,
             })
-            .toBe("disabled");
+            .toBeGreaterThan(revisionBeforePolicyEdit);
+          const persistedPolicyEdit = JSON.parse(
+            await fs.readFile(configPath, "utf-8"),
+          ) as OpenClawConfig;
+          expect(persistedPolicyEdit.channels?.whatsapp?.dmPolicy).toBe("disabled");
           expect(getRuntimeConfig().channels?.whatsapp?.dmPolicy).toBe("open");
 
-          const sourceBeforeUnrelatedWrite = getRuntimeConfigSourceSnapshot();
-          if (!sourceBeforeUnrelatedWrite) {
-            throw new Error("expected an active runtime source snapshot");
-          }
+          const sourceBeforeUnrelatedWrite = (await configIO.readConfigFileSnapshot()).sourceConfig;
+          const revisionBeforeUnrelatedWrite = getRuntimeConfigSnapshotMetadata()?.revision ?? -1;
           await writeConfigFile({
             ...sourceBeforeUnrelatedWrite,
             ui: { assistant: { name: "unrelated-managed-write" } },
           });
+          await expect
+            .poll(() => getRuntimeConfigSnapshotMetadata()?.revision ?? -1, {
+              timeout: 5_000,
+              interval: 50,
+            })
+            .toBeGreaterThan(revisionBeforeUnrelatedWrite);
           const persistedAfterUnrelatedWrite = JSON.parse(
             await fs.readFile(configPath, "utf-8"),
           ) as OpenClawConfig;
