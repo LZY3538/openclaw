@@ -1201,7 +1201,7 @@ describe("startGatewayConfigReloader", () => {
     });
     await vi.runAllTimersAsync();
 
-    expect(events).toEqual(["applied", "prepared", "accepted"]);
+    expect(events).toEqual(["prepared", "applied", "prepared", "accepted"]);
     expect(terminalPolicy.resolve()).toMatchObject({
       ok: false,
       block: { kind: "sandboxed", mode: "all" },
@@ -1369,7 +1369,11 @@ describe("startGatewayConfigReloader", () => {
     expect(onHotReload.mock.calls[1]?.[0].hotReasons).toContain("hooks.path");
     expect(harness.onConfigAccepted).toHaveBeenCalledOnce();
     expect(harness.onConfigAccepted.mock.calls[0]?.[0]).toEqual(initialConfig);
-    expect(harness.onConfigApplied).toHaveBeenCalledOnce();
+    expect(harness.onConfigApplied).toHaveBeenCalledTimes(2);
+    expect(harness.onConfigApplied.mock.calls.map(([, config]) => config)).toEqual([
+      configA,
+      initialConfig,
+    ]);
     expect(promoteSnapshot.mock.calls.map(([snapshot]) => snapshot.hash)).toEqual(["reverse-b"]);
 
     await harness.reloader.stop();
@@ -1851,6 +1855,7 @@ describe("startGatewayConfigReloader", () => {
     expect(harness.onHotReload).not.toHaveBeenCalled();
     expect(harness.onRestart).not.toHaveBeenCalled();
     expect(harness.onConfigAccepted.mock.calls.map((call) => call[3])).toEqual([
+      { runtimeApplied: false },
       { runtimeApplied: false },
       { runtimeApplied: false },
     ]);
@@ -2720,7 +2725,10 @@ describe("startGatewayConfigReloader", () => {
         onEffectiveConfigUnchanged: async () => rollbackSource,
       },
     );
-    emitSupersedingChange = () => harness.watcher.emit("change");
+    emitSupersedingChange = () => {
+      emitSupersedingChange = () => {};
+      harness.watcher.emit("change");
+    };
 
     harness.emitWrite({
       configPath: "/tmp/openclaw.json",
