@@ -5169,6 +5169,38 @@ describe("deferred channel reload abort generation", () => {
     expect(channels.start).not.toHaveBeenCalled();
   });
 
+  it("does not roll back a failed plugin pre-stop after lifecycle restart aborts", async () => {
+    const logChannels = { info: vi.fn(), error: vi.fn() };
+    const channels = {
+      start: vi.fn(async () => {}),
+      stop: vi.fn(async () => {
+        abortPendingChannelReloads();
+        throw new Error("stop failed during drain");
+      }),
+    };
+    const reloadPlugins: NonNullable<ReloadHandlerParams["reloadPlugins"]> = async (params) => {
+      await params.beforeReplace(new Set(["whatsapp"]));
+      return {
+        restartChannels: new Set(),
+        activeChannels: new Set(),
+        cancelled: params.isAborted?.() === true,
+      };
+    };
+    const requestRecoveryRestart = vi.fn(() => ({ status: "emitted" as const }));
+    const { applyHotReload } = createTestHandlers(logChannels, channels, {
+      reloadPlugins,
+      requestRecoveryRestart,
+    });
+
+    await expect(applyHotReload(createPluginReloadPlan(), {})).rejects.toThrow(
+      "config hot reload cancelled by config supersession or in-process restart",
+    );
+
+    expect(channels.stop).toHaveBeenCalledWith("whatsapp", undefined, { manual: false });
+    expect(channels.start).not.toHaveBeenCalled();
+    expect(requestRecoveryRestart).not.toHaveBeenCalled();
+  });
+
   it("schedules recovery when plugin cancellation rollback cannot restart a channel", async () => {
     const logChannels = { info: vi.fn(), error: vi.fn() };
     const channels = {

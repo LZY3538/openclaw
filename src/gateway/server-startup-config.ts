@@ -72,7 +72,7 @@ export type ActivateRuntimeSecrets = ((
     snapshot: PreparedRuntimeSecretsSnapshot,
     expectedRevision: number,
     params: RuntimeSecretsActivationParams,
-    onActivated?: () => Promise<void>,
+    onActivated?: () => void | Promise<void>,
     canActivate?: () => boolean,
   ) => Promise<PreparedRuntimeSecretsSnapshot | null>;
 };
@@ -385,7 +385,7 @@ export function createRuntimeSecretsActivator(params: {
                 ...(onActivated
                   ? {
                       onActivated: () => {
-                        publication = onActivated();
+                        publication = Promise.resolve(onActivated());
                       },
                     }
                   : {}),

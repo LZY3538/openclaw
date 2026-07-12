@@ -576,20 +576,6 @@ function markRuntimePersistedProfiles(
   };
 }
 
-function buildRuntimeAuthProfileStoreForSave(params: {
-  store: AuthProfileStore;
-  agentDir?: string;
-  options?: SaveAuthProfileStoreOptions;
-}): AuthProfileStore {
-  return buildLocalAuthProfileStoreForSave({
-    ...params,
-    options: {
-      ...params.options,
-      filterExternalAuthProfiles: false,
-    },
-  });
-}
-
 function setRuntimeExternalProfileMetadata(params: {
   store: AuthProfileStore;
   profileIds: ReadonlySet<string>;
@@ -1126,17 +1112,24 @@ export function saveAuthProfileStore(
     }
     if (hasRuntimeAuthProfileStoreSnapshot(agentDir)) {
       const existingRuntimeStore = getRuntimeAuthProfileStoreSnapshot(agentDir);
-      const nextRuntimeStore = markRuntimePersistedProfiles(
-        buildRuntimeAuthProfileStoreForSave({ store, agentDir, options }),
-        localStore,
-      );
+      const refreshed = loadAuthProfileStoreForRuntime(agentDir, {
+        readOnly: true,
+        syncExternalCli: false,
+        externalCli: { mode: "none" },
+      });
+      const materialized = existingRuntimeStore
+        ? preserveResolvedSecretBackedCredentials({
+            next: refreshed,
+            existing: existingRuntimeStore,
+          })
+        : refreshed;
       setRuntimeAuthProfileStoreSnapshot(
         existingRuntimeStore
           ? mergeRuntimeExternalProfileReferences({
-              next: nextRuntimeStore,
+              next: materialized,
               existing: existingRuntimeStore,
             })
-          : nextRuntimeStore,
+          : materialized,
         agentDir,
       );
     }

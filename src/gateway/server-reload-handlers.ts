@@ -721,6 +721,9 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
             );
           },
         });
+        if (isPluginReloadAborted()) {
+          pluginReloadAborted = true;
+        }
         if (pluginReloadAborted) {
           if (isLifecycleReloadAborted()) {
             return;

@@ -538,6 +538,7 @@ export function startGatewayConfigReloader(opts: {
         throw new GatewayConfigReloadSupersededError();
       }
       if (handleMissingSnapshot(snapshot)) {
+        await flushPendingRuntimeApplication();
         return;
       }
       if (
@@ -603,6 +604,7 @@ export function startGatewayConfigReloader(opts: {
       }
       if (!snapshot.valid) {
         handleInvalidSnapshot(snapshot);
+        await flushPendingRuntimeApplication();
         return;
       }
       await runAcceptedTransaction(async () => {

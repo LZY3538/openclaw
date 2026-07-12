@@ -1061,6 +1061,62 @@ describe("startGatewayConfigReloader", () => {
     await harness.reloader.stop();
   });
 
+  it.each([
+    ["invalid", makeSnapshot({ valid: false, hash: "invalid-b" })],
+    ["missing", makeSnapshot({ exists: false, valid: false, raw: null, hash: "missing-b" })],
+  ] as const)(
+    "applies a committed runtime owner before rejecting a superseding %s snapshot",
+    async (_, rejectedSnapshot) => {
+      const initialConfig = {
+        gateway: { reload: { debounceMs: 0 }, terminal: { enabled: true } },
+        agents: { defaults: { sandbox: { mode: "off" as const } } },
+      } satisfies OpenClawConfig;
+      const appliedConfig = {
+        ...initialConfig,
+        agents: { defaults: { sandbox: { mode: "all" as const } } },
+      } satisfies OpenClawConfig;
+      const terminalPolicy = createTerminalLaunchPolicy(initialConfig);
+      const onNoopConfigCommit = async (
+        plan: GatewayReloadPlan,
+        nextConfig: OpenClawConfig,
+        ownership: GatewayConfigReloadTransactionOwnership,
+      ) => {
+        terminalPolicy.prepareConfig(nextConfig, { restartPending: false });
+        ownership.markRuntimeCommitted(nextConfig, plan);
+        harness.watcher.emit("change");
+      };
+      const harness = createReloaderHarness(
+        vi.fn(async () => rejectedSnapshot),
+        {
+          initialConfig,
+          initialCompareConfig: initialConfig,
+          onNoopConfigCommit,
+          onConfigApplied: () => terminalPolicy.commitConfig(),
+        },
+      );
+
+      harness.emitWrite({
+        configPath: "/tmp/openclaw.json",
+        sourceConfig: appliedConfig,
+        runtimeConfig: appliedConfig,
+        persistedHash: "runtime-a-before-rejected-b",
+        revision: 1,
+        fingerprint: "runtime-a-before-rejected-b",
+        sourceFingerprint: "source-a-before-rejected-b",
+        writtenAtMs: Date.now(),
+      });
+      await vi.runAllTimersAsync();
+
+      expect(harness.onConfigApplied).toHaveBeenCalledOnce();
+      expect(terminalPolicy.resolve()).toMatchObject({
+        ok: false,
+        block: { kind: "sandboxed", mode: "all" },
+      });
+
+      await harness.reloader.stop();
+    },
+  );
+
   it("applies a superseded runtime owner before preparing a restart candidate", async () => {
     const initialConfig = {
       gateway: { reload: { debounceMs: 0 }, terminal: { enabled: true } },
