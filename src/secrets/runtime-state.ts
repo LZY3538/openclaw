@@ -420,11 +420,9 @@ function rebuildSelectedRuntimeProfileMetadata(
   const localProfileIds = profileIdsFor("runtimeLocalProfileIds");
   store.runtimeLocalProfileIds = localProfileIds.length > 0 ? localProfileIds : undefined;
   const externalProfileIds = profileIdsFor("runtimeExternalProfileIds");
-  const externalAuthoritative =
-    store.runtimeExternalProfileIdsAuthoritative === true ||
-    [...new Set(selectedSources.values())].some(
-      (source) => source.runtimeExternalProfileIdsAuthoritative === true,
-    );
+  // Authority is store-wide three-way state; profile selection must not import it
+  // from an unrelated credential source.
+  const externalAuthoritative = store.runtimeExternalProfileIdsAuthoritative === true;
   store.runtimeExternalProfileIds =
     externalProfileIds.length > 0 || externalAuthoritative ? externalProfileIds : undefined;
   store.runtimeExternalProfileIdsAuthoritative = externalAuthoritative ? true : undefined;
@@ -457,6 +455,7 @@ function getProfileMutationDecision(params: {
   profileId: string;
   mutationLineage: typeof activeSnapshotLineageAuthMutations;
 }): {
+  baselineOwner: ProfileOwner;
   candidateOwner: ProfileOwner;
   candidateStatus: "mutated" | "unchanged" | "unknown";
   ownerChanged: boolean;
@@ -465,6 +464,7 @@ function getProfileMutationDecision(params: {
   const captured = params.mutationLineage[params.agentDir]?.profiles[params.profileId];
   if (!captured) {
     return {
+      baselineOwner: "absent",
       candidateOwner: "absent",
       candidateStatus: "mutated",
       ownerChanged: false,
@@ -474,6 +474,7 @@ function getProfileMutationDecision(params: {
   const ownerChanged = captured.baseline.owner !== captured.candidate.owner;
   const relevant = ownerChanged ? captured.baseline : captured.candidate;
   return {
+    baselineOwner: captured.baseline.owner,
     candidateOwner: captured.candidate.owner,
     candidateStatus: compareMutationTokens(
       captured.candidate.token,
@@ -557,32 +558,21 @@ function mergeRollbackAuthStoreCredentials(
       });
       const profileMutationStatus = profileMutationDecision.status;
       const profileMutated = profileMutationStatus === "mutated";
+      const currentOwner = profileOwner(currentStore, profileId);
       let credential: AuthProfileCredential | undefined;
       let selectedSource: AuthProfileStore | undefined;
-      if (profileMutationDecision.ownerChanged) {
-        if (profileMutationStatus !== "unchanged") {
+      if (currentOwner !== profileMutationDecision.candidateOwner) {
+        credential = currentCredential;
+        selectedSource = currentStore;
+      } else if (profileMutationDecision.ownerChanged) {
+        if (
+          profileMutationStatus !== "unchanged" ||
+          profileMutationDecision.candidateStatus !== "unchanged"
+        ) {
           invalidateStore = true;
-        } else if (profileMutationDecision.candidateOwner === "external") {
-          credential = baselineCredential;
-          selectedSource = baselineStore;
-        } else if (profileMutationDecision.candidateStatus === "mutated") {
-          credential = baselineCredential;
-          selectedSource = baselineStore;
-        } else if (profileMutationDecision.candidateStatus === "unknown") {
-          if (isDeepStrictEqual(currentCredential, candidateCredential)) {
-            credential = baselineCredential;
-            selectedSource = baselineStore;
-          } else {
-            invalidateStore = true;
-          }
         } else {
-          if (isDeepStrictEqual(currentCredential, candidateCredential)) {
-            credential = baselineCredential;
-            selectedSource = baselineStore;
-          } else {
-            credential = currentCredential;
-            selectedSource = currentStore;
-          }
+          credential = baselineCredential;
+          selectedSource = baselineStore;
         }
       } else if (profileMutationStatus === "unknown") {
         if (isDeepStrictEqual(baselineCredential, candidateCredential)) {
@@ -609,6 +599,7 @@ function mergeRollbackAuthStoreCredentials(
       const candidateRef = credentialSecretRef(candidateCredential);
       const currentRef = credentialSecretRef(currentCredential);
       if (
+        currentOwner === profileMutationDecision.candidateOwner &&
         profileMutationStatus === "unchanged" &&
         candidateRef &&
         currentRef &&
@@ -621,7 +612,6 @@ function mergeRollbackAuthStoreCredentials(
         selectedSource = baselineStore;
       }
       if (
-        profileMutationStatus !== "unknown" &&
         baselineRef &&
         candidateRef &&
         currentRef &&
