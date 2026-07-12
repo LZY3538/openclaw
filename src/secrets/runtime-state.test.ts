@@ -1457,7 +1457,7 @@ describe("secrets runtime state", () => {
     },
   );
 
-  it("does not resurrect a baseline external store after omitted-owner mutation", () => {
+  it("does not resurrect a baseline external store after a new main profile is added", () => {
     const agentDir = "/tmp/openclaw-auth-external-store-omission-mutation";
     const snapshot = (includeStore: boolean, port: number): PreparedSecretsRuntimeSnapshot => ({
       sourceConfig: {},
@@ -1505,8 +1505,9 @@ describe("secrets runtime state", () => {
     ).toBe(true);
     noteRuntimeAuthProfileStorePersistedMutation(undefined, {
       credentialsChanged: true,
+      profileSetChanged: true,
       stateChanged: false,
-      profileIds: ["openai:x"],
+      profileIds: ["openai:new-main"],
     });
 
     expect(
@@ -1986,8 +1987,9 @@ describe("secrets runtime state", () => {
   it.each([
     { capturedOwner: "local", currentOwner: "inherited", label: "local delete" },
     { capturedOwner: "inherited", currentOwner: "local", label: "local upsert" },
+    { capturedOwner: "local", currentOwner: "local", label: "same-owner local update" },
   ] as const)(
-    "invalidates a same-ref provider change after a durable $label owner transition",
+    "invalidates a same-ref provider change after a durable $label",
     ({ capturedOwner, currentOwner }) => {
       const agentDir = `/tmp/openclaw-auth-provider-owner-${capturedOwner}-${currentOwner}`;
       const keyRef = {

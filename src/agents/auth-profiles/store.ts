@@ -1187,6 +1187,10 @@ export function saveAuthProfileStore(
   ].filter(
     (profileId) => !isDeepStrictEqual(existingProfiles[profileId], payload.profiles[profileId]),
   );
+  const profileSetChanged = changedProfileIds.some(
+    (profileId) =>
+      Object.hasOwn(existingProfiles, profileId) !== Object.hasOwn(payload.profiles, profileId),
+  );
   const credentialsChanged = !isDeepStrictEqual(existingRaw, payload);
   const statePayload = buildPersistedAuthProfileState(localStore);
   const stateChanged = !isDeepStrictEqual(
@@ -1205,6 +1209,7 @@ export function saveAuthProfileStore(
     if (credentialsChanged || stateChanged) {
       noteRuntimeAuthProfileStorePersistedMutation(agentDir, {
         credentialsChanged,
+        profileSetChanged,
         stateChanged,
         profileIds: changedProfileIds,
       });

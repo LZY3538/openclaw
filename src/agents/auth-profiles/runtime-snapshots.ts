@@ -18,6 +18,8 @@ const MAX_PERSISTED_MUTATION_PROFILES_PER_OWNER = 256;
 type PersistedMutationRecord = {
   credentialRevision: number;
   credentialRevisionKnown: boolean;
+  profileSetRevision: number;
+  profileSetRevisionKnown: boolean;
   stateRevision: number;
   stateRevisionKnown: boolean;
   mutationFloor: number;
@@ -29,6 +31,7 @@ const persistedMutationRecords = new Map<string, PersistedMutationRecord>();
 function maxMutationRevision(record: PersistedMutationRecord): number {
   return Math.max(
     record.credentialRevision,
+    record.profileSetRevision,
     record.stateRevision,
     record.mutationFloor,
     ...record.profileRevisions.values(),
@@ -47,6 +50,8 @@ function getOrCreatePersistedMutationRecord(ownerKey: string): PersistedMutation
   const record: PersistedMutationRecord = {
     credentialRevision: evictedOwnerMutationFloor,
     credentialRevisionKnown: evictedOwnerMutationFloor === 0,
+    profileSetRevision: evictedOwnerMutationFloor,
+    profileSetRevisionKnown: evictedOwnerMutationFloor === 0,
     stateRevision: evictedOwnerMutationFloor,
     stateRevisionKnown: evictedOwnerMutationFloor === 0,
     mutationFloor: evictedOwnerMutationFloor,
@@ -198,11 +203,12 @@ export function noteRuntimeAuthProfileStorePersistedMutation(
   agentDir: string | undefined,
   mutation: {
     credentialsChanged: boolean;
+    profileSetChanged?: boolean;
     stateChanged: boolean;
     profileIds: Iterable<string>;
   },
 ): void {
-  if (!mutation.credentialsChanged && !mutation.stateChanged) {
+  if (!mutation.credentialsChanged && !mutation.profileSetChanged && !mutation.stateChanged) {
     return;
   }
   persistedMutationRevision += 1;
@@ -211,6 +217,10 @@ export function noteRuntimeAuthProfileStorePersistedMutation(
   }
   const ownerKey = resolveRuntimeStoreKey(agentDir);
   const record = getOrCreatePersistedMutationRecord(ownerKey);
+  if (mutation.profileSetChanged) {
+    record.profileSetRevision = persistedMutationRevision;
+    record.profileSetRevisionKnown = true;
+  }
   if (mutation.credentialsChanged) {
     record.credentialRevision = persistedMutationRevision;
     record.credentialRevisionKnown = true;
@@ -286,6 +296,17 @@ export function getRuntimeAuthProfileStoreCredentialMutationToken(
         : { revision, known: true };
     }),
   );
+}
+
+/** Persisted token for profile-id additions and removals in one owner store. */
+export function getRuntimeAuthProfileStoreProfileSetMutationToken(
+  agentDir?: string,
+): RuntimeAuthProfileStoreMutationToken {
+  const ownerKey = resolveRuntimeStoreKey(agentDir);
+  const record = getPersistedMutationRecord(ownerKey);
+  return record
+    ? { revision: record.profileSetRevision, known: record.profileSetRevisionKnown }
+    : { revision: evictedOwnerMutationFloor, known: evictedOwnerMutationFloor === 0 };
 }
 
 /** Persisted mutation token for non-secret selection state in one owner store. */

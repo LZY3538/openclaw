@@ -5,6 +5,7 @@ import {
   getRuntimeAuthProfileStoreSnapshot,
   getRuntimeAuthProfileStoreCredentialMutationToken,
   getRuntimeAuthProfileStoreCredentialsRevision,
+  getRuntimeAuthProfileStoreProfileSetMutationToken,
   getRuntimeAuthProfileStoreStateMutationToken,
   listRuntimeAuthProfileStoreSnapshots,
   replaceRuntimeAuthProfileStoreSnapshots,
@@ -58,7 +59,10 @@ let activeSnapshotLineageAuthStores: PreparedSecretsRuntimeSnapshot["authStores"
 let activeSnapshotLineageAuthMutations: Record<
   string,
   {
-    store: RuntimeAuthProfileStoreMutationToken;
+    store: {
+      baseline: StoreMutationLineage;
+      candidate: StoreMutationLineage;
+    };
     state: { token: RuntimeAuthProfileStoreMutationToken; includeMain: boolean };
     profiles: Record<
       string,
@@ -79,6 +83,10 @@ const preparedSnapshotRefreshContext = new WeakMap<
 type ProfileOwner = "absent" | "external" | "inherited" | "local";
 type ProfileOwnerMutationLineage = {
   owner: ProfileOwner;
+  token: RuntimeAuthProfileStoreMutationToken;
+};
+type StoreMutationLineage = {
+  mainProfileSetToken?: RuntimeAuthProfileStoreMutationToken;
   token: RuntimeAuthProfileStoreMutationToken;
 };
 
@@ -164,6 +172,22 @@ function captureProfileOwnerMutationLineage(
   };
 }
 
+function captureStoreMutationLineage(
+  agentDir: string,
+  store: AuthProfileStore | undefined,
+): StoreMutationLineage {
+  const includeMain =
+    !store ||
+    Object.keys(store.profiles).length === 0 ||
+    Object.keys(store.profiles).some((profileId) => profileOwner(store, profileId) === "inherited");
+  return {
+    ...(includeMain
+      ? { mainProfileSetToken: getRuntimeAuthProfileStoreProfileSetMutationToken() }
+      : {}),
+    token: getRuntimeAuthProfileStoreCredentialMutationToken(agentDir),
+  };
+}
+
 function captureAuthStoreMutationLineage(
   baselineAuthStores: PreparedSecretsRuntimeSnapshot["authStores"],
   candidateAuthStores: PreparedSecretsRuntimeSnapshot["authStores"],
@@ -187,7 +211,10 @@ function captureAuthStoreMutationLineage(
       return [
         agentDir,
         {
-          store: getRuntimeAuthProfileStoreCredentialMutationToken(agentDir),
+          store: {
+            baseline: captureStoreMutationLineage(agentDir, baselineStore),
+            candidate: captureStoreMutationLineage(agentDir, candidateStore),
+          },
           state: {
             token: getRuntimeAuthProfileStoreStateMutationToken(agentDir, {
               includeMain: effectiveStore?.runtimeInheritsMainState === true,
@@ -507,9 +534,28 @@ function mergeRollbackAuthStoreCredentials(
     const baselineStore = baseline[agentDir];
     const candidateStore = candidate[agentDir];
     const currentStore = current[agentDir];
-    const storeMutationStatus = compareMutationTokens(
-      mutationLineage[agentDir]?.store ?? { revision: 0, known: true },
-      getRuntimeAuthProfileStoreCredentialMutationToken(agentDir),
+    const currentStoreMutationStatus = (lineage: StoreMutationLineage | undefined) => {
+      const ownerStatus = compareMutationTokens(
+        lineage?.token ?? { revision: 0, known: true },
+        getRuntimeAuthProfileStoreCredentialMutationToken(agentDir),
+      );
+      const mainProfileSetStatus = lineage?.mainProfileSetToken
+        ? compareMutationTokens(
+            lineage.mainProfileSetToken,
+            getRuntimeAuthProfileStoreProfileSetMutationToken(),
+          )
+        : "unchanged";
+      return ownerStatus === "mutated" || mainProfileSetStatus === "mutated"
+        ? "mutated"
+        : ownerStatus === "unknown" || mainProfileSetStatus === "unknown"
+          ? "unknown"
+          : "unchanged";
+    };
+    const baselineStoreMutationStatus = currentStoreMutationStatus(
+      mutationLineage[agentDir]?.store.baseline,
+    );
+    const candidateStoreMutationStatus = currentStoreMutationStatus(
+      mutationLineage[agentDir]?.store.candidate,
     );
     const stateMutationStatus = compareMutationTokens(
       mutationLineage[agentDir]?.state.token ?? { revision: 0, known: true },
@@ -529,7 +575,8 @@ function mergeRollbackAuthStoreCredentials(
       if (
         !candidateStore &&
         baselineStore &&
-        storeMutationStatus === "unchanged" &&
+        baselineStoreMutationStatus === "unchanged" &&
+        candidateStoreMutationStatus === "unchanged" &&
         stateMutationStatus === "unchanged" &&
         !profileOwnerMutated
       ) {
@@ -619,7 +666,10 @@ function mergeRollbackAuthStoreCredentials(
         isDeepStrictEqual(baselineRef, currentRef) &&
         !hasSameSecretProviderDefinition(baselineRef, configs)
       ) {
-        if (currentOwner !== profileMutationDecision.candidateOwner) {
+        if (
+          currentOwner !== profileMutationDecision.candidateOwner ||
+          profileMutationStatus !== "unchanged"
+        ) {
           invalidateStore = true;
           credential = undefined;
           selectedSource = undefined;
