@@ -1049,6 +1049,7 @@ describe("gateway startup config secret preflight", () => {
 
   it("retries a stale startup fast-path preflight against the newer runtime context", async () => {
     const agentDir = mkdtempSync(path.join(tmpdir(), "openclaw-startup-fast-path-cas-"));
+    let clearImportedSecretsRuntimeSnapshot: (() => void) | undefined;
     const config = (port: number) =>
       gatewayTokenConfig(
         asConfig({
@@ -1057,7 +1058,13 @@ describe("gateway startup config secret preflight", () => {
         }),
       );
     try {
-      const activateRuntimeSecrets = createRuntimeSecretsActivator(
+      // A preceding lazy-import test resets Vitest's module cache. Import this
+      // whole runtime graph together so the activator and handler share state.
+      const { createRuntimeSecretsActivator: createImportedRuntimeSecretsActivator } =
+        await import("./server-startup-config.js");
+      const secretsRuntime = await import("../secrets/runtime.js");
+      clearImportedSecretsRuntimeSnapshot = secretsRuntime.clearSecretsRuntimeSnapshot;
+      const activateRuntimeSecrets = createImportedRuntimeSecretsActivator(
         runtimeSecretsActivatorOptionsForTest(),
       );
       await activateRuntimeSecrets(config(19_021), {
@@ -1074,7 +1081,6 @@ describe("gateway startup config secret preflight", () => {
       const preflightResult = await staleRefreshHandler.preflight({
         sourceConfig: desiredConfig,
       });
-      const secretsRuntime = await import("../secrets/runtime.js");
       const concurrent = await secretsRuntime.prepareSecretsRuntimeSnapshot({
         config: config(19_022),
         agentDirs: [agentDir],
@@ -1095,12 +1101,13 @@ describe("gateway startup config secret preflight", () => {
         staleRefreshHandler.refresh({ sourceConfig: desiredConfig, preflightResult }),
       ).resolves.toBe(true);
 
-      const active = getActiveSecretsRuntimeSnapshot();
+      const active = secretsRuntime.getActiveSecretsRuntimeSnapshot();
       expect(active?.sourceConfig.gateway?.port).toBe(19_023);
       expect(active?.authStores[0]?.store.profiles["openai:default"]).toMatchObject({
         key: "newer-context-key",
       });
     } finally {
+      clearImportedSecretsRuntimeSnapshot?.();
       rmSync(agentDir, { recursive: true, force: true });
     }
   });
