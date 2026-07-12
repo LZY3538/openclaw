@@ -2087,4 +2087,241 @@ describe("secrets runtime state", () => {
       expect(getRuntimeAuthProfileStoreSnapshot(agentDir)).toBeUndefined();
     },
   );
+
+  it.each([
+    { affectedProvider: true, currentProvider: "vault" },
+    { affectedProvider: false, currentProvider: "stable" },
+  ] as const)(
+    "handles a durable ref-id update through $currentProvider with affected=$affectedProvider",
+    ({ affectedProvider, currentProvider }) => {
+      const agentDir = `/tmp/openclaw-auth-provider-ref-update-${currentProvider}`;
+      const previousSourceConfig = {
+        secrets: {
+          providers: {
+            stable: { source: "file" as const, path: "/tmp/stable-secrets.json" },
+            vault: { source: "file" as const, path: "/tmp/old-secrets.json" },
+          },
+        },
+      };
+      const candidateSourceConfig = {
+        secrets: {
+          providers: {
+            stable: { source: "file" as const, path: "/tmp/stable-secrets.json" },
+            vault: { source: "file" as const, path: "/tmp/rejected-secrets.json" },
+          },
+        },
+      };
+      const previousRef = {
+        source: "file" as const,
+        provider: "vault",
+        id: "openai-a",
+      };
+      const currentRef = {
+        source: "file" as const,
+        provider: currentProvider,
+        id: "openai-b",
+      };
+      const snapshot = (params: {
+        key: string;
+        keyRef: SecretRef;
+        port: number;
+        sourceConfig: OpenClawConfig;
+      }): PreparedSecretsRuntimeSnapshot => ({
+        sourceConfig: { ...params.sourceConfig, gateway: { port: params.port } },
+        config: { gateway: { port: params.port } },
+        authStores: [
+          {
+            agentDir,
+            store: {
+              version: 1,
+              profiles: {
+                "openai:default": {
+                  type: "api_key",
+                  provider: "openai",
+                  key: params.key,
+                  keyRef: params.keyRef,
+                },
+              },
+              runtimeLocalProfileIds: ["openai:default"],
+            },
+          },
+        ],
+        authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
+        warnings: [],
+        webTools: {
+          search: { providerSource: "none", diagnostics: [] },
+          fetch: { providerSource: "none", diagnostics: [] },
+          diagnostics: [],
+        },
+      });
+      activateSecretsRuntimeSnapshotState({
+        snapshot: snapshot({
+          key: "sk-old",
+          keyRef: previousRef,
+          port: 19_051,
+          sourceConfig: previousSourceConfig,
+        }),
+        refreshContext: null,
+        refreshHandler: null,
+      });
+      const previous = getActiveSecretsRuntimeSnapshot()!;
+      const candidate = snapshot({
+        key: "sk-candidate",
+        keyRef: previousRef,
+        port: 19_052,
+        sourceConfig: candidateSourceConfig,
+      });
+      expect(
+        activateSecretsRuntimeSnapshotStateIfCurrent({
+          snapshot: candidate,
+          expectedRevision: getActiveSecretsRuntimeSnapshotRevision(),
+          refreshContext: null,
+          refreshHandler: null,
+        }),
+      ).toBe(true);
+      noteRuntimeAuthProfileStorePersistedMutation(agentDir, {
+        credentialsChanged: true,
+        stateChanged: false,
+        profileIds: ["openai:default"],
+      });
+      setRuntimeAuthProfileStoreSnapshot(
+        snapshot({
+          key: "sk-durable",
+          keyRef: currentRef,
+          port: 19_052,
+          sourceConfig: candidateSourceConfig,
+        }).authStores[0]!.store,
+        agentDir,
+      );
+
+      expect(
+        restoreSecretsRuntimeSnapshotStateIfCurrent({
+          snapshot: previous,
+          expectedRevision: getActiveSecretsRuntimeSnapshotRevision(),
+          ownedSnapshot: candidate,
+          refreshContext: null,
+          refreshHandler: null,
+        }),
+      ).toBe(true);
+      if (affectedProvider) {
+        expect(getRuntimeAuthProfileStoreSnapshot(agentDir)).toBeUndefined();
+      } else {
+        expect(
+          getRuntimeAuthProfileStoreSnapshot(agentDir)?.profiles["openai:default"],
+        ).toMatchObject({ key: "sk-durable", keyRef: currentRef });
+      }
+    },
+  );
+
+  it.each(["external", "local"] as const)(
+    "invalidates an absent-profile $currentOwner upsert under a rejected provider",
+    (currentOwner) => {
+      const agentDir = `/tmp/openclaw-auth-provider-absent-upsert-${currentOwner}`;
+      const snapshot = (params: {
+        includeProfile: boolean;
+        providerPath: string;
+        port: number;
+      }): PreparedSecretsRuntimeSnapshot => ({
+        sourceConfig: {
+          gateway: { port: params.port },
+          secrets: {
+            providers: { vault: { source: "file", path: params.providerPath } },
+          },
+        },
+        config: { gateway: { port: params.port } },
+        authStores: [
+          {
+            agentDir,
+            store: {
+              version: 1,
+              profiles: {
+                "anthropic:stable": {
+                  type: "api_key",
+                  provider: "anthropic",
+                  key: "sk-stable",
+                },
+                ...(params.includeProfile
+                  ? {
+                      "openai:default": {
+                        type: "api_key" as const,
+                        provider: "openai",
+                        key: "sk-current",
+                        keyRef: {
+                          source: "file" as const,
+                          provider: "vault",
+                          id: "openai-b",
+                        },
+                      },
+                    }
+                  : {}),
+              },
+              runtimeExternalProfileIds:
+                params.includeProfile && currentOwner === "external" ? ["openai:default"] : [],
+              runtimeLocalProfileIds: [
+                "anthropic:stable",
+                ...(params.includeProfile && currentOwner === "local" ? ["openai:default"] : []),
+              ],
+            },
+          },
+        ],
+        authStoreCredentialsRevision: getRuntimeAuthProfileStoreCredentialsRevision(),
+        warnings: [],
+        webTools: {
+          search: { providerSource: "none", diagnostics: [] },
+          fetch: { providerSource: "none", diagnostics: [] },
+          diagnostics: [],
+        },
+      });
+      activateSecretsRuntimeSnapshotState({
+        snapshot: snapshot({
+          includeProfile: false,
+          providerPath: "/tmp/old-secrets.json",
+          port: 19_061,
+        }),
+        refreshContext: null,
+        refreshHandler: null,
+      });
+      const previous = getActiveSecretsRuntimeSnapshot()!;
+      const candidate = snapshot({
+        includeProfile: false,
+        providerPath: "/tmp/rejected-secrets.json",
+        port: 19_062,
+      });
+      expect(
+        activateSecretsRuntimeSnapshotStateIfCurrent({
+          snapshot: candidate,
+          expectedRevision: getActiveSecretsRuntimeSnapshotRevision(),
+          refreshContext: null,
+          refreshHandler: null,
+        }),
+      ).toBe(true);
+      if (currentOwner === "local") {
+        noteRuntimeAuthProfileStorePersistedMutation(agentDir, {
+          credentialsChanged: true,
+          profileSetChanged: true,
+          stateChanged: false,
+          profileIds: ["openai:default"],
+        });
+      }
+      setRuntimeAuthProfileStoreSnapshot(
+        snapshot({
+          includeProfile: true,
+          providerPath: "/tmp/rejected-secrets.json",
+          port: 19_062,
+        }).authStores[0]!.store,
+        agentDir,
+      );
+
+      expect(
+        restoreSecretsRuntimeSnapshotStateIfCurrent({
+          snapshot: previous,
+          expectedRevision: getActiveSecretsRuntimeSnapshotRevision(),
+          ownedSnapshot: candidate,
+          refreshContext: null,
+          refreshHandler: null,
+        }),
+      ).toBe(true);
+      expect(getRuntimeAuthProfileStoreSnapshot(agentDir)).toBeUndefined();
+    },
+  );
 });

@@ -678,6 +678,16 @@ function mergeRollbackAuthStoreCredentials(
           selectedSource = baselineStore;
         }
       }
+      const selectedRef = credentialSecretRef(credential);
+      if (
+        selectedSource === currentStore &&
+        selectedRef &&
+        !hasSameSecretProviderDefinition(selectedRef, [configs[0], configs[1]])
+      ) {
+        invalidateStore = true;
+        credential = undefined;
+        selectedSource = undefined;
+      }
       if (credential && selectedSource) {
         profiles[profileId] = structuredClone(credential);
         selectedSources.set(profileId, selectedSource);
