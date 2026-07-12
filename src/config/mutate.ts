@@ -694,6 +694,7 @@ async function tryWriteSingleTopLevelIncludeMutation(params: {
     managedPreparedCandidates = await preflightManagedRuntimeConfigWrite(
       params.snapshot.path,
       runtimeConfigToWrite,
+      params.writeOptions?.runtimeRefresh,
     );
   } else {
     runtimePreflightResult = await preflightRuntimeSnapshotWrite({
@@ -793,6 +794,7 @@ async function tryWriteSingleTopLevelIncludeMutation(params: {
           runtimeConfig: notificationRuntimeConfig,
           persistedHash,
           afterWrite: params.afterWrite ?? params.writeOptions?.afterWrite,
+          runtimeRefresh: params.writeOptions?.runtimeRefresh,
           ...(notificationPreparedCandidates.size > 0
             ? { preparedCandidatesByOwner: notificationPreparedCandidates }
             : {}),
