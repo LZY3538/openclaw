@@ -79,6 +79,7 @@ export type RuntimeConfigWriteNotification = {
   sourceFingerprint: string | null;
   writtenAtMs: number;
   afterWrite?: ConfigWriteAfterWrite;
+  runtimeRefresh?: RuntimeConfigSnapshotRefreshOptions;
   preparedCandidate?: RuntimeConfigWritePreparedCandidate;
   preparedCandidatesByOwner?: ReadonlyMap<symbol, RuntimeConfigWritePreparedCandidate>;
 };
@@ -104,6 +105,7 @@ let runtimeConfigSnapshotRevision = 0;
 let runtimeConfigSnapshotRefreshHandler: RuntimeConfigSnapshotRefreshHandler | null = null;
 type ManagedRuntimeConfigWritePreflight = (
   sourceConfig: OpenClawConfig,
+  refreshOptions?: RuntimeConfigSnapshotRefreshOptions,
 ) => MaybePromise<RuntimeConfigWritePreparedCandidate>;
 const managedRuntimeConfigWriteOwners = new Map<
   string,
@@ -162,6 +164,22 @@ export function setRuntimeConfigSnapshot(
   runtimeConfigSnapshotMetadata = createRuntimeConfigSnapshotMetadata(config, sourceConfig);
 }
 
+/** Publish a newer canonical source without changing the active runtime object. */
+export function setRuntimeConfigSourceSnapshotIfCurrent(params: {
+  expectedRevision: number;
+  sourceConfig: OpenClawConfig;
+}): boolean {
+  if (
+    !runtimeConfigSnapshot ||
+    !runtimeConfigSnapshotMetadata ||
+    runtimeConfigSnapshotMetadata.revision !== params.expectedRevision
+  ) {
+    return false;
+  }
+  setRuntimeConfigSnapshot(runtimeConfigSnapshot, params.sourceConfig);
+  return true;
+}
+
 export function resetConfigRuntimeState(): void {
   runtimeConfigSnapshot = null;
   runtimeConfigSourceSnapshot = null;
@@ -200,6 +218,7 @@ export function createRuntimeConfigWriteNotification(params: {
   persistedHash: string;
   writtenAtMs?: number;
   afterWrite?: ConfigWriteAfterWrite;
+  runtimeRefresh?: RuntimeConfigSnapshotRefreshOptions;
   preparedCandidate?: RuntimeConfigWritePreparedCandidate;
   preparedCandidatesByOwner?: ReadonlyMap<symbol, RuntimeConfigWritePreparedCandidate>;
 }): RuntimeConfigWriteNotification {
@@ -222,6 +241,7 @@ export function createRuntimeConfigWriteNotification(params: {
     sourceFingerprint: metadata.sourceFingerprint,
     writtenAtMs: params.writtenAtMs ?? Date.now(),
     afterWrite: params.afterWrite,
+    ...(params.runtimeRefresh ? { runtimeRefresh: params.runtimeRefresh } : {}),
     ...(params.preparedCandidate ? { preparedCandidate: params.preparedCandidate } : {}),
     ...(params.preparedCandidatesByOwner
       ? { preparedCandidatesByOwner: params.preparedCandidatesByOwner }
@@ -302,6 +322,7 @@ export function registerManagedRuntimeConfigWriteOwner(
 export async function preflightManagedRuntimeConfigWrite(
   configPath: string,
   sourceConfig: OpenClawConfig,
+  refreshOptions?: RuntimeConfigSnapshotRefreshOptions,
 ): Promise<Map<symbol, RuntimeConfigWritePreparedCandidate>> {
   const owners = managedRuntimeConfigWriteOwners.get(configPath);
   if (!owners) {
@@ -310,7 +331,7 @@ export async function preflightManagedRuntimeConfigWrite(
   const preparedCandidates = new Map<symbol, RuntimeConfigWritePreparedCandidate>();
   for (const owner of owners) {
     if (owner.preflight) {
-      preparedCandidates.set(owner.id, await owner.preflight(sourceConfig));
+      preparedCandidates.set(owner.id, await owner.preflight(sourceConfig, refreshOptions));
     }
   }
   return preparedCandidates;

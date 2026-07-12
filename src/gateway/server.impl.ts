@@ -29,6 +29,7 @@ import { captureConfigOverrideApplier } from "../config/runtime-overrides.js";
 import { resolveMainSessionKey } from "../config/sessions.js";
 import type { GatewayAuthConfig } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { isSecretRef } from "../config/types.secrets.js";
 import { getActiveCronJobCount } from "../cron/active-jobs.js";
 import {
   isDiagnosticsEnabled,
@@ -693,10 +694,23 @@ export async function startGatewayServer(
           if (startupAuthOverride[key] === undefined) {
             return [];
           }
+          if ((key === "token" || key === "password") && isSecretRef(startupAuthOverride[key])) {
+            return [];
+          }
           const resolvedValue = cfgAtStart.gateway?.auth?.[key];
           return resolvedValue === undefined ? [] : [[key, structuredClone(resolvedValue)]];
         }),
       ) as GatewayAuthConfig)
+    : undefined;
+  const startupAuthSecretRefOverride = startupAuthOverride
+    ? {
+        ...(isSecretRef(startupAuthOverride.token)
+          ? { token: structuredClone(startupAuthOverride.token) }
+          : {}),
+        ...(isSecretRef(startupAuthOverride.password)
+          ? { password: structuredClone(startupAuthOverride.password) }
+          : {}),
+      }
     : undefined;
   const reloadAuthOverride = authBootstrap.generatedToken
     ? mergeGatewayAuthConfig(resolvedStartupAuthOverride, { token: authBootstrap.generatedToken })
@@ -762,6 +776,18 @@ export async function startGatewayServer(
     }
     return runtimeConfig;
   };
+  const applyReloadableGatewayAuthRefs = (config: OpenClawConfig): OpenClawConfig => {
+    if (!startupAuthSecretRefOverride?.token && !startupAuthSecretRefOverride?.password) {
+      return config;
+    }
+    return {
+      ...config,
+      gateway: {
+        ...config.gateway,
+        auth: mergeGatewayAuthConfig(config.gateway?.auth, startupAuthSecretRefOverride),
+      },
+    };
+  };
   const prepareReloadCandidate = (params: {
     runtimeConfig: OpenClawConfig;
     sourceConfig: OpenClawConfig;
@@ -784,7 +810,7 @@ export async function startGatewayServer(
         }),
       );
     const reapplyRuntimeOverlays = (config: OpenClawConfig): OpenClawConfig =>
-      applyFixedGatewayOverlays(reapplyCompareOverlays(config));
+      applyFixedGatewayOverlays(applyReloadableGatewayAuthRefs(reapplyCompareOverlays(config)));
     return {
       runtimeConfig: reapplyRuntimeOverlays(params.runtimeConfig),
       compareConfig: reapplyCompareOverlays(params.sourceConfig),
@@ -2006,7 +2032,7 @@ export async function startGatewayServer(
       subscribeToWrites: (listener) =>
         registerConfigWriteListener(listener, {
           ownsRuntimeActivationFor: configSnapshot.path,
-          preCommitRuntimePreflight: async (sourceConfig) => {
+          preCommitRuntimePreflight: async (sourceConfig, runtimeRefresh) => {
             const candidate = prepareReloadCandidate({
               runtimeConfig: sourceConfig,
               sourceConfig,
@@ -2014,6 +2040,7 @@ export async function startGatewayServer(
             await activateRuntimeSecrets(candidate.runtimeConfig, {
               reason: "reload",
               activate: false,
+              includeAuthStoreRefs: runtimeRefresh?.includeAuthStoreRefs,
             });
             return candidate;
           },

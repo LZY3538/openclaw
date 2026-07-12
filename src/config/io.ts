@@ -122,6 +122,7 @@ import {
   resolveRuntimeConfigCacheKey,
   selectApplicableRuntimeConfig,
   setRuntimeConfigSnapshot as setRuntimeConfigSnapshotState,
+  setRuntimeConfigSourceSnapshotIfCurrent as setRuntimeConfigSourceSnapshotIfCurrentState,
   getRuntimeConfigSnapshotRefreshHandler as getRuntimeConfigSnapshotRefreshHandlerState,
   setRuntimeConfigSnapshotRefreshHandler as setRuntimeConfigSnapshotRefreshHandlerState,
   type ConfigWriteAfterWrite,
@@ -147,6 +148,7 @@ export {
   resolveRuntimeConfigCacheKey,
   selectApplicableRuntimeConfig,
   setRuntimeConfigSnapshotState as setRuntimeConfigSnapshot,
+  setRuntimeConfigSourceSnapshotIfCurrentState as setRuntimeConfigSourceSnapshotIfCurrent,
   setRuntimeConfigSnapshotRefreshHandlerState as setRuntimeConfigSnapshotRefreshHandler,
   registerManagedRuntimeConfigWriteOwner,
 };
@@ -2791,6 +2793,7 @@ export function registerConfigWriteListener(
     ownsRuntimeActivationFor?: string;
     preCommitRuntimePreflight?: (
       sourceConfig: OpenClawConfig,
+      refreshOptions?: RuntimeConfigSnapshotRefreshOptions,
     ) => Promise<RuntimeConfigWritePreparedCandidate>;
   } = {},
 ): () => void {
@@ -3019,6 +3022,7 @@ export async function writeConfigFile(
             managedPreparedCandidates = await preflightManagedRuntimeConfigWrite(
               io.configPath,
               sourceConfig,
+              options.runtimeRefresh,
             );
           },
         }
@@ -3099,6 +3103,7 @@ export async function writeConfigFile(
         runtimeConfig: notificationRuntimeConfig,
         persistedHash: writeResult.persistedHash,
         afterWrite: options.afterWrite,
+        runtimeRefresh: options.runtimeRefresh,
         ...(notificationPreparedCandidates.size > 0
           ? { preparedCandidatesByOwner: notificationPreparedCandidates }
           : {}),

@@ -14,6 +14,10 @@ import { getTotalPendingReplies } from "../auto-reply/reply/dispatcher-registry.
 import type { CliDeps } from "../cli/deps.types.js";
 import { isRestartEnabled } from "../config/commands.flags.js";
 import { getConfigValueAtPath } from "../config/config-paths.js";
+import {
+  getRuntimeConfigSnapshotMetadata,
+  setRuntimeConfigSourceSnapshotIfCurrent,
+} from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isSecretRef } from "../config/types.secrets.js";
 import { isTruthyEnvValue } from "../infra/env.js";
@@ -1570,6 +1574,7 @@ export function startManagedGatewayConfigReloader(
           {
             reason: "restart-check",
             activate: false,
+            includeAuthStoreRefs: transactionOwnership.runtimeRefresh?.includeAuthStoreRefs,
           },
         );
         assertCurrent();
@@ -1617,6 +1622,7 @@ export function startManagedGatewayConfigReloader(
             {
               reason: "restart-check",
               activate: false,
+              includeAuthStoreRefs: transactionOwnership.runtimeRefresh?.includeAuthStoreRefs,
             },
           );
           assertCurrent();
@@ -1685,6 +1691,7 @@ export function startManagedGatewayConfigReloader(
               {
                 reason: "restart-check",
                 activate: false,
+                includeAuthStoreRefs: transactionOwnership.runtimeRefresh?.includeAuthStoreRefs,
               },
             );
             if (!transactionOwnership.isCurrent()) {
@@ -1721,6 +1728,22 @@ export function startManagedGatewayConfigReloader(
       });
     },
     onConfigApplied: () => params.commitTerminalConfig(),
+    onEffectiveConfigUnchanged: (transactionOwnership, sourceConfig) => {
+      if (!transactionOwnership.isCurrent()) {
+        throw new GatewayConfigReloadSupersededError();
+      }
+      const metadata = getRuntimeConfigSnapshotMetadata();
+      if (
+        !metadata ||
+        !setRuntimeConfigSourceSnapshotIfCurrent({
+          expectedRevision: metadata.revision,
+          sourceConfig,
+        }) ||
+        !transactionOwnership.isCurrent()
+      ) {
+        throw new GatewayConfigReloadSupersededError();
+      }
+    },
     onNoopConfigCommit: async (plan, nextConfig, transactionOwnership, sourceConfig) => {
       for (;;) {
         if (!transactionOwnership.isCurrent()) {
@@ -1732,6 +1755,7 @@ export function startManagedGatewayConfigReloader(
           {
             reason: "reload",
             activate: false,
+            includeAuthStoreRefs: transactionOwnership.runtimeRefresh?.includeAuthStoreRefs,
           },
         );
         if (!transactionOwnership.isCurrent()) {
@@ -1779,6 +1803,7 @@ export function startManagedGatewayConfigReloader(
           {
             reason: "reload",
             activate: false,
+            includeAuthStoreRefs: transactionOwnership.runtimeRefresh?.includeAuthStoreRefs,
           },
         );
         if (!transactionOwnership.isCurrent()) {
@@ -1806,6 +1831,7 @@ export function startManagedGatewayConfigReloader(
                 {
                   reason: "restart-check",
                   activate: false,
+                  includeAuthStoreRefs: transactionOwnership.runtimeRefresh?.includeAuthStoreRefs,
                 },
               );
               if (!transactionOwnership.isCurrent()) {

@@ -57,6 +57,7 @@ type PreparedRuntimeSecretsSnapshot = Awaited<ReturnType<PrepareRuntimeSecretsSn
 type RuntimeSecretsActivationParams = {
   reason: "startup" | "reload" | "restart-check";
   activate: boolean;
+  includeAuthStoreRefs?: boolean;
 };
 
 /** Gateway startup hook that prepares secrets and optionally activates the prepared snapshot. */
@@ -324,6 +325,7 @@ export function createRuntimeSecretsActivator(params: {
           () =>
             prepareRuntimeSecretsSnapshot({
               config: pruneSkippedStartupSecretSurfaces(config),
+              includeAuthStoreRefs: activationParams.includeAuthStoreRefs,
               ...(startupManifestRegistry ? { manifestRegistry: startupManifestRegistry } : {}),
               ...(params.pluginMetadataSnapshot
                 ? { pluginMetadataSnapshot: params.pluginMetadataSnapshot }

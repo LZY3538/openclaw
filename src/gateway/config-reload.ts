@@ -4,6 +4,7 @@ import chokidar from "chokidar";
 import type { ConfigWriteNotification } from "../config/io.js";
 import { formatConfigIssueLines } from "../config/issue-format.js";
 import { resolveConfigWriteFollowUp } from "../config/runtime-snapshot.js";
+import type { RuntimeConfigSnapshotRefreshOptions } from "../config/runtime-snapshot.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import {
@@ -104,6 +105,7 @@ type InProcessConfigCandidate = {
   persistedHash: string;
   afterWrite?: ConfigWriteNotification["afterWrite"];
   preparedCandidate?: ConfigWriteNotification["preparedCandidate"];
+  runtimeRefresh?: RuntimeConfigSnapshotRefreshOptions;
   epoch: number;
 };
 
@@ -111,6 +113,7 @@ export type GatewayConfigReloadTransactionOwnership = {
   isCurrent: () => boolean;
   markRuntimeCommitted: (runtimeConfig: OpenClawConfig, plan: GatewayReloadPlan) => void;
   reapplyRuntimeOverlays: (config: OpenClawConfig) => OpenClawConfig;
+  runtimeRefresh?: RuntimeConfigSnapshotRefreshOptions;
 };
 
 type PreparedGatewayConfigCandidate = {
@@ -156,6 +159,11 @@ export function startGatewayConfigReloader(opts: {
     sourceConfig: OpenClawConfig,
     acceptance: { runtimeApplied: boolean },
   ) => void | Promise<void>;
+  /** Publishes a newer source snapshot when effective runtime bytes are unchanged. */
+  onEffectiveConfigUnchanged?: (
+    ownership: GatewayConfigReloadTransactionOwnership,
+    sourceConfig: OpenClawConfig,
+  ) => void | Promise<void>;
   onNoopConfigCommit: (
     plan: GatewayReloadPlan,
     nextConfig: OpenClawConfig,
@@ -195,6 +203,9 @@ export function startGatewayConfigReloader(opts: {
   let currentConfig = initialCandidate?.runtimeConfig ?? opts.initialConfig;
   let currentCompareConfig = initialCandidate?.compareConfig ?? initialSourceConfig;
   let currentSourceConfig = initialSourceConfig;
+  let currentReapplyRuntimeOverlays =
+    initialCandidate?.reapplyRuntimeOverlays ?? ((config: OpenClawConfig) => config);
+  let currentRuntimeRefresh: RuntimeConfigSnapshotRefreshOptions | undefined;
   let settings = resolveGatewayReloadSettings(currentConfig);
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let pending = false;
@@ -208,6 +219,9 @@ export function startGatewayConfigReloader(opts: {
   let watcherIntentCandidate: InProcessConfigCandidate | null = null;
   let lastAppliedWriteHash = opts.initialInternalWriteHash ?? null;
   let lastSourceOnlyWriteHash: string | null = null;
+  let lastSourceOnlyReapplyRuntimeOverlays: ((config: OpenClawConfig) => OpenClawConfig) | null =
+    null;
+  let lastSourceOnlyRuntimeRefresh: RuntimeConfigSnapshotRefreshOptions | undefined;
   let pendingRuntimeApplicationPlan: GatewayReloadPlan | null = null;
   let currentPluginInstallRecords =
     opts.initialPluginInstallRecords ?? loadInstalledPluginIndexInstallRecordsSync();
@@ -301,6 +315,7 @@ export function startGatewayConfigReloader(opts: {
     transactionEpoch = configWriteEpoch,
     persistedHash?: string,
     preflightCandidate?: ConfigWriteNotification["preparedCandidate"],
+    runtimeRefresh?: RuntimeConfigSnapshotRefreshOptions,
   ) => {
     const preparedCandidate =
       preflightCandidate ??
@@ -316,6 +331,7 @@ export function startGatewayConfigReloader(opts: {
     const ownership: GatewayConfigReloadTransactionOwnership = {
       isCurrent: () => configWriteEpoch === transactionEpoch,
       reapplyRuntimeOverlays: preparedCandidate?.reapplyRuntimeOverlays ?? ((config) => config),
+      ...(runtimeRefresh ? { runtimeRefresh } : {}),
       markRuntimeCommitted: (runtimeConfig, plan) => {
         // Publication can win immediately before a watcher supersedes this
         // transaction. Advance the runtime diff baseline at that exact edge so
@@ -324,6 +340,8 @@ export function startGatewayConfigReloader(opts: {
         currentConfig = runtimeConfig;
         currentCompareConfig = nextCompareConfig;
         currentSourceConfig = nextSourceConfig;
+        currentReapplyRuntimeOverlays = ownership.reapplyRuntimeOverlays;
+        currentRuntimeRefresh = ownership.runtimeRefresh;
         currentPluginInstallRecords = nextPluginInstallRecords;
         settings = resolveGatewayReloadSettings(runtimeConfig);
         pendingRuntimeApplicationPlan = plan;
@@ -396,19 +414,27 @@ export function startGatewayConfigReloader(opts: {
         // Persisted-but-skipped candidates are not runtime truth. Keep the
         // effective baseline so a later safe edit cannot publish them indirectly.
         lastSourceOnlyWriteHash = persistedHash ?? null;
+        lastSourceOnlyReapplyRuntimeOverlays = ownership.reapplyRuntimeOverlays;
+        lastSourceOnlyRuntimeRefresh = ownership.runtimeRefresh;
         return;
       }
       if (persistedHash === lastSourceOnlyWriteHash) {
         lastSourceOnlyWriteHash = null;
+        lastSourceOnlyReapplyRuntimeOverlays = null;
+        lastSourceOnlyRuntimeRefresh = undefined;
       }
       currentConfig = committedRuntimeConfig ?? nextConfig;
       currentCompareConfig = nextCompareConfig;
+      currentReapplyRuntimeOverlays = ownership.reapplyRuntimeOverlays;
+      currentRuntimeRefresh = ownership.runtimeRefresh;
       currentPluginInstallRecords = nextPluginInstallRecords;
       settings = committedRuntimeConfig
         ? resolveGatewayReloadSettings(committedRuntimeConfig)
         : nextSettings;
     };
     if (changedPaths.length === 0) {
+      await opts.onEffectiveConfigUnchanged?.(ownership, nextSourceConfig);
+      assertCurrent();
       await commitReloadBaseline();
       return;
     }
@@ -552,6 +578,7 @@ export function startGatewayConfigReloader(opts: {
               pendingWrite.epoch,
               pendingWrite.persistedHash,
               pendingWrite.preparedCandidate,
+              pendingWrite.runtimeRefresh,
             );
             if (activeInProcessConfig === pendingWrite) {
               activeInProcessConfig = null;
@@ -603,6 +630,7 @@ export function startGatewayConfigReloader(opts: {
               transactionEpoch,
               intentCandidate.persistedHash,
               intentCandidate.preparedCandidate,
+              intentCandidate.runtimeRefresh,
             );
             if (watcherIntentCandidate === intentCandidate) {
               watcherIntentCandidate = null;
@@ -633,11 +661,33 @@ export function startGatewayConfigReloader(opts: {
           diffConfigPaths(currentSourceConfig, snapshot.sourceConfig).length === 0;
         if (matchesAcceptedEffectiveConfig) {
           if (snapshot.hash === lastSourceOnlyWriteHash) {
+            const ownership: GatewayConfigReloadTransactionOwnership = {
+              isCurrent: () => configWriteEpoch === transactionEpoch,
+              reapplyRuntimeOverlays:
+                lastSourceOnlyReapplyRuntimeOverlays ?? currentReapplyRuntimeOverlays,
+              ...(lastSourceOnlyRuntimeRefresh
+                ? { runtimeRefresh: lastSourceOnlyRuntimeRefresh }
+                : {}),
+              markRuntimeCommitted: () => {},
+            };
+            await runAcceptedTransaction(async () => {
+              await flushPendingRuntimeApplication();
+              if (!ownership.isCurrent()) {
+                throw new GatewayConfigReloadSupersededError();
+              }
+              await opts.onConfigAccepted?.(currentConfig, ownership, currentSourceConfig, {
+                runtimeApplied: false,
+              });
+              if (!ownership.isCurrent()) {
+                throw new GatewayConfigReloadSupersededError();
+              }
+            });
             return;
           }
           const ownership: GatewayConfigReloadTransactionOwnership = {
             isCurrent: () => configWriteEpoch === transactionEpoch,
-            reapplyRuntimeOverlays: (config) => config,
+            reapplyRuntimeOverlays: currentReapplyRuntimeOverlays,
+            ...(currentRuntimeRefresh ? { runtimeRefresh: currentRuntimeRefresh } : {}),
             markRuntimeCommitted: () => {},
           };
           await runAcceptedTransaction(async () => {
@@ -730,6 +780,7 @@ export function startGatewayConfigReloader(opts: {
         persistedHash: event.persistedHash,
         afterWrite: event.afterWrite,
         ...(event.preparedCandidate ? { preparedCandidate: event.preparedCandidate } : {}),
+        ...(event.runtimeRefresh ? { runtimeRefresh: event.runtimeRefresh } : {}),
         epoch: configWriteEpoch,
       };
       lastAppliedWriteHash = event.persistedHash;

@@ -742,6 +742,10 @@ function createReloaderHarness(
       sourceConfig: OpenClawConfig,
       acceptance: { runtimeApplied: boolean },
     ) => void | Promise<void>;
+    onEffectiveConfigUnchanged?: (
+      ownership: GatewayConfigReloadTransactionOwnership,
+      sourceConfig: OpenClawConfig,
+    ) => void | Promise<void>;
     onConfigApplied?: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => void | Promise<void>;
     onConfigChange?: (plan: GatewayReloadPlan, nextConfig: OpenClawConfig) => void | Promise<void>;
     onNoopConfigCommit?: (
@@ -774,6 +778,7 @@ function createReloaderHarness(
       (async (_plan: GatewayReloadPlan, _nextConfig: OpenClawConfig) => {}),
   );
   const onConfigAccepted = vi.fn(options.onConfigAccepted ?? (async () => {}));
+  const onEffectiveConfigUnchanged = vi.fn(options.onEffectiveConfigUnchanged ?? (async () => {}));
   const onNoopConfigCommit = vi.fn(
     options.onNoopConfigCommit ??
       (async (
@@ -826,6 +831,7 @@ function createReloaderHarness(
     onConfigChange,
     onConfigApplied,
     onConfigAccepted,
+    onEffectiveConfigUnchanged,
     onNoopConfigCommit,
     onHotReload,
     onRestart,
@@ -838,6 +844,7 @@ function createReloaderHarness(
     onConfigChange,
     onConfigApplied,
     onConfigAccepted,
+    onEffectiveConfigUnchanged,
     onNoopConfigCommit,
     onHotReload,
     onRestart,
@@ -2601,6 +2608,107 @@ describe("startGatewayConfigReloader", () => {
     expect(harness.log.info).toHaveBeenCalledWith(
       "config reload skipped by writer intent (secret-aware writer intent)",
     );
+
+    await harness.reloader.stop();
+  });
+
+  it("publishes a managed source edit when runtime overlays mask every effective change", async () => {
+    const initialConfig = {
+      gateway: { reload: { debounceMs: 0 } },
+      logging: { level: "info" as const },
+    } satisfies OpenClawConfig;
+    const sourceConfig = {
+      ...initialConfig,
+      logging: { level: "debug" as const },
+    } satisfies OpenClawConfig;
+    const harness = createReloaderHarness(vi.fn(), { initialConfig });
+
+    harness.emitWrite({
+      configPath: "/tmp/openclaw.json",
+      sourceConfig,
+      runtimeConfig: sourceConfig,
+      preparedCandidate: {
+        runtimeConfig: initialConfig,
+        compareConfig: initialConfig,
+        reapplyRuntimeOverlays: () => initialConfig,
+      },
+      persistedHash: "masked-source-edit",
+      revision: 1,
+      fingerprint: "runtime-masked-source-edit",
+      sourceFingerprint: "source-masked-source-edit",
+      writtenAtMs: Date.now(),
+    });
+    await vi.runAllTimersAsync();
+
+    expect(harness.onEffectiveConfigUnchanged).toHaveBeenCalledWith(
+      expect.any(Object),
+      sourceConfig,
+    );
+    expect(harness.onConfigAccepted).toHaveBeenCalledOnce();
+
+    await harness.reloader.stop();
+  });
+
+  it("retains the accepted candidate overlay when a watcher echoes the same hash", async () => {
+    const sourceConfig = makeZeroDebounceHookWrite("overlay-echo").sourceConfig;
+    const applyDebugOverride = (config: OpenClawConfig): OpenClawConfig => ({
+      ...config,
+      logging: { level: "debug" },
+    });
+    const readSnapshot = vi.fn(async () => makeZeroDebounceHookSnapshot("overlay-echo"));
+    const harness = createReloaderHarness(readSnapshot);
+
+    harness.emitWrite({
+      ...makeZeroDebounceHookWrite("overlay-echo"),
+      preparedCandidate: {
+        runtimeConfig: applyDebugOverride(sourceConfig),
+        compareConfig: sourceConfig,
+        reapplyRuntimeOverlays: applyDebugOverride,
+      },
+    });
+    await vi.runAllTimersAsync();
+    harness.watcher.emit("change");
+    await vi.runAllTimersAsync();
+
+    expect(harness.onConfigAccepted).toHaveBeenCalledTimes(2);
+    const replayOwnership = harness.onConfigAccepted.mock.calls[1]?.[1];
+    expect(replayOwnership?.reapplyRuntimeOverlays(sourceConfig).logging?.level).toBe("debug");
+
+    await harness.reloader.stop();
+  });
+
+  it("rebinds a source-only restart target when its watcher echo advances ownership", async () => {
+    const sourceConfig = makeZeroDebounceHookWrite("source-only-echo").sourceConfig;
+    const applyDebugOverride = (config: OpenClawConfig): OpenClawConfig => ({
+      ...config,
+      logging: { level: "debug" },
+    });
+    const readSnapshot = vi.fn(async () => makeZeroDebounceHookSnapshot("source-only-echo"));
+    const harness = createReloaderHarness(readSnapshot);
+
+    harness.emitWrite({
+      ...makeZeroDebounceHookWrite("source-only-echo"),
+      afterWrite: { mode: "none", reason: "source owner handles follow-up" },
+      preparedCandidate: {
+        runtimeConfig: applyDebugOverride(sourceConfig),
+        compareConfig: sourceConfig,
+        reapplyRuntimeOverlays: applyDebugOverride,
+      },
+    });
+    await vi.runAllTimersAsync();
+    const originalOwnership = harness.onConfigAccepted.mock.calls[0]?.[1];
+
+    harness.watcher.emit("change");
+    await vi.runAllTimersAsync();
+
+    expect(harness.onConfigAccepted.mock.calls.map((call) => call[3])).toEqual([
+      { runtimeApplied: false },
+      { runtimeApplied: false },
+    ]);
+    expect(originalOwnership?.isCurrent()).toBe(false);
+    const reboundOwnership = harness.onConfigAccepted.mock.calls[1]?.[1];
+    expect(reboundOwnership?.isCurrent()).toBe(true);
+    expect(reboundOwnership?.reapplyRuntimeOverlays(sourceConfig).logging?.level).toBe("debug");
 
     await harness.reloader.stop();
   });

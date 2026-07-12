@@ -9,6 +9,8 @@ import {
   clearConfigCache,
   clearRuntimeConfigSnapshot,
   getRuntimeConfig,
+  getRuntimeConfigSourceSnapshot,
+  writeConfigFile,
 } from "../config/config.js";
 import { resetConfigOverrides, setConfigOverride } from "../config/runtime-overrides.js";
 import { clearSessionStoreCacheForTest } from "../config/sessions/store.js";
@@ -304,6 +306,33 @@ describe("gateway e2e", () => {
           expect(getRuntimeConfig().channels?.whatsapp?.dmPolicy).toBe("open");
           expect(getRuntimeConfig().channels?.whatsapp?.allowFrom).toEqual(["*"]);
 
+          await writeConfigFile({
+            ...getRuntimeConfig(),
+            channels: {
+              ...getRuntimeConfig().channels,
+              whatsapp: {
+                ...getRuntimeConfig().channels?.whatsapp,
+                dmPolicy: "disabled",
+              },
+            },
+          });
+          await expect
+            .poll(() => getRuntimeConfigSourceSnapshot()?.channels?.whatsapp?.dmPolicy, {
+              timeout: 5_000,
+              interval: 50,
+            })
+            .toBe("disabled");
+          expect(getRuntimeConfig().channels?.whatsapp?.dmPolicy).toBe("open");
+
+          await writeConfigFile({
+            ...getRuntimeConfig(),
+            identity: { name: "unrelated-managed-write" },
+          });
+          const persistedAfterUnrelatedWrite = JSON.parse(
+            await fs.readFile(configPath, "utf-8"),
+          ) as OpenClawConfig;
+          expect(persistedAfterUnrelatedWrite.channels?.whatsapp?.dmPolicy).toBe("disabled");
+
           resetConfigOverrides();
           await configIO.writeConfigFile({
             ...initialConfig,
@@ -338,6 +367,70 @@ describe("gateway e2e", () => {
       } finally {
         await disconnectGatewayClient(client);
         await server.close({ reason: "direct reload test complete" });
+        await removeGatewayTempHome(tempHome);
+        envSnapshot.restore();
+      }
+    },
+  );
+
+  it(
+    "re-resolves a startup auth SecretRef override when secrets reload",
+    { timeout: GATEWAY_E2E_TIMEOUT_MS },
+    async () => {
+      const { envSnapshot, tempHome } = await setupGatewayTempHome({
+        prefix: "openclaw-gw-startup-auth-ref-",
+      });
+      const configPath = await createGatewayConfigPath(tempHome);
+      setTestEnvValue("OPENCLAW_CONFIG_PATH", configPath);
+      const configIO = createConfigIO({ configPath });
+      const fileToken = nextGatewayId("startup-auth-file-token");
+      const oldToken = nextGatewayId("startup-auth-ref-old");
+      const newToken = nextGatewayId("startup-auth-ref-new");
+      await configIO.writeConfigFile({
+        gateway: { auth: { mode: "token", token: fileToken } },
+        logging: { level: "info" },
+      });
+      setTestEnvValue("OPENCLAW_TEST_GATEWAY_OVERRIDE_TOKEN", oldToken);
+      const port = await getFreeGatewayPort();
+      const server = await startGatewayServer(port, {
+        bind: "loopback",
+        auth: {
+          mode: "token",
+          token: {
+            source: "env",
+            provider: "default",
+            id: "OPENCLAW_TEST_GATEWAY_OVERRIDE_TOKEN",
+          },
+        },
+        controlUiEnabled: false,
+      });
+      const oldClient = await connectGatewayClient({
+        url: `ws://127.0.0.1:${port}`,
+        token: oldToken,
+        clientDisplayName: "vitest-startup-auth-ref-old",
+      });
+
+      try {
+        setTestEnvValue("OPENCLAW_TEST_GATEWAY_OVERRIDE_TOKEN", newToken);
+        await oldClient.request("secrets.reload", {});
+        const newClient = await connectGatewayClient({
+          url: `ws://127.0.0.1:${port}`,
+          token: newToken,
+          clientDisplayName: "vitest-startup-auth-ref-new",
+        });
+        await disconnectGatewayClient(newClient);
+
+        await configIO.writeConfigFile({
+          gateway: { auth: { mode: "token", token: fileToken } },
+          logging: { level: "debug" },
+        });
+        const persisted = JSON.parse(await fs.readFile(configPath, "utf-8")) as {
+          gateway?: { auth?: { token?: unknown } };
+        };
+        expect(persisted.gateway?.auth?.token).toBe(fileToken);
+      } finally {
+        await disconnectGatewayClient(oldClient);
+        await server.close({ reason: "startup auth SecretRef rotation test complete" });
         await removeGatewayTempHome(tempHome);
         envSnapshot.restore();
       }
