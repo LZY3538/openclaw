@@ -404,6 +404,32 @@ function credentialSecretRef(credential: AuthProfileCredential | undefined): Sec
   return null;
 }
 
+function rebuildSelectedRuntimeProfileMetadata(
+  store: AuthProfileStore,
+  selectedSources: Map<string, AuthProfileStore>,
+): void {
+  const profileIdsFor = (
+    field: "runtimeExternalProfileIds" | "runtimeLocalProfileIds" | "runtimePersistedProfileIds",
+  ) =>
+    [...selectedSources]
+      .flatMap(([profileId, source]) => (source[field]?.includes(profileId) ? [profileId] : []))
+      .toSorted();
+  const persistedProfileIds = profileIdsFor("runtimePersistedProfileIds");
+  store.runtimePersistedProfileIds =
+    persistedProfileIds.length > 0 ? persistedProfileIds : undefined;
+  const localProfileIds = profileIdsFor("runtimeLocalProfileIds");
+  store.runtimeLocalProfileIds = localProfileIds.length > 0 ? localProfileIds : undefined;
+  const externalProfileIds = profileIdsFor("runtimeExternalProfileIds");
+  const externalAuthoritative =
+    store.runtimeExternalProfileIdsAuthoritative === true ||
+    [...new Set(selectedSources.values())].some(
+      (source) => source.runtimeExternalProfileIdsAuthoritative === true,
+    );
+  store.runtimeExternalProfileIds =
+    externalProfileIds.length > 0 || externalAuthoritative ? externalProfileIds : undefined;
+  store.runtimeExternalProfileIdsAuthoritative = externalAuthoritative ? true : undefined;
+}
+
 function compareMutationTokens(
   captured: RuntimeAuthProfileStoreMutationToken,
   current: RuntimeAuthProfileStoreMutationToken,
@@ -431,17 +457,24 @@ function getProfileMutationDecision(params: {
   profileId: string;
   mutationLineage: typeof activeSnapshotLineageAuthMutations;
 }): {
+  candidateOwner: ProfileOwner;
   candidateStatus: "mutated" | "unchanged" | "unknown";
   ownerChanged: boolean;
   status: "mutated" | "unchanged" | "unknown";
 } {
   const captured = params.mutationLineage[params.agentDir]?.profiles[params.profileId];
   if (!captured) {
-    return { candidateStatus: "mutated", ownerChanged: false, status: "mutated" };
+    return {
+      candidateOwner: "absent",
+      candidateStatus: "mutated",
+      ownerChanged: false,
+      status: "mutated",
+    };
   }
   const ownerChanged = captured.baseline.owner !== captured.candidate.owner;
   const relevant = ownerChanged ? captured.baseline : captured.candidate;
   return {
+    candidateOwner: captured.candidate.owner,
     candidateStatus: compareMutationTokens(
       captured.candidate.token,
       readProfileOwnerMutationToken(params.agentDir, params.profileId, captured.candidate.owner),
@@ -507,6 +540,7 @@ function mergeRollbackAuthStoreCredentials(
     }
     const store = next[agentDir] ?? structuredClone(baselineStore ?? currentStore);
     const profiles: AuthProfileStore["profiles"] = {};
+    const selectedSources = new Map<string, AuthProfileStore>();
     const profileIds = new Set([
       ...Object.keys(baselineStore?.profiles ?? {}),
       ...Object.keys(candidateStore?.profiles ?? {}),
@@ -524,34 +558,52 @@ function mergeRollbackAuthStoreCredentials(
       const profileMutationStatus = profileMutationDecision.status;
       const profileMutated = profileMutationStatus === "mutated";
       let credential: AuthProfileCredential | undefined;
+      let selectedSource: AuthProfileStore | undefined;
       if (profileMutationDecision.ownerChanged) {
         if (profileMutationStatus !== "unchanged") {
           invalidateStore = true;
+        } else if (profileMutationDecision.candidateOwner === "external") {
+          credential = baselineCredential;
+          selectedSource = baselineStore;
         } else if (profileMutationDecision.candidateStatus === "mutated") {
           credential = baselineCredential;
+          selectedSource = baselineStore;
         } else if (profileMutationDecision.candidateStatus === "unknown") {
           if (isDeepStrictEqual(currentCredential, candidateCredential)) {
             credential = baselineCredential;
+            selectedSource = baselineStore;
           } else {
             invalidateStore = true;
           }
         } else {
-          credential = isDeepStrictEqual(currentCredential, candidateCredential)
-            ? baselineCredential
-            : currentCredential;
+          if (isDeepStrictEqual(currentCredential, candidateCredential)) {
+            credential = baselineCredential;
+            selectedSource = baselineStore;
+          } else {
+            credential = currentCredential;
+            selectedSource = currentStore;
+          }
         }
       } else if (profileMutationStatus === "unknown") {
         if (isDeepStrictEqual(baselineCredential, candidateCredential)) {
           credential = currentCredential;
+          selectedSource = currentStore;
         } else {
           invalidateStore = true;
         }
       } else {
-        credential = isDeepStrictEqual(currentCredential, candidateCredential)
-          ? profileMutated
-            ? currentCredential
-            : baselineCredential
-          : currentCredential;
+        if (isDeepStrictEqual(currentCredential, candidateCredential)) {
+          if (profileMutated) {
+            credential = currentCredential;
+            selectedSource = currentStore;
+          } else {
+            credential = baselineCredential;
+            selectedSource = baselineStore;
+          }
+        } else {
+          credential = currentCredential;
+          selectedSource = currentStore;
+        }
       }
       const baselineRef = credentialSecretRef(baselineCredential);
       const candidateRef = credentialSecretRef(candidateCredential);
@@ -566,6 +618,7 @@ function mergeRollbackAuthStoreCredentials(
         // Candidate activation owns the ref transition. Descendant resolution may refresh the
         // literal, but without a persisted write rollback still restores the previous owner/ref.
         credential = baselineCredential;
+        selectedSource = baselineStore;
       }
       if (
         profileMutationStatus !== "unknown" &&
@@ -577,9 +630,11 @@ function mergeRollbackAuthStoreCredentials(
         !hasSameSecretProviderDefinition(baselineRef, configs)
       ) {
         credential = baselineCredential;
+        selectedSource = baselineStore;
       }
-      if (credential) {
+      if (credential && selectedSource) {
         profiles[profileId] = structuredClone(credential);
+        selectedSources.set(profileId, selectedSource);
       }
     }
     if (invalidateStore) {
@@ -593,6 +648,7 @@ function mergeRollbackAuthStoreCredentials(
       continue;
     }
     store.profiles = profiles;
+    rebuildSelectedRuntimeProfileMetadata(store, selectedSources);
     next[agentDir] = store;
   }
   return next;
