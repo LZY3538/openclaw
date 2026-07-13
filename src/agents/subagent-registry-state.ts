@@ -125,9 +125,21 @@ function setCachedControllerRuns(
   if (cache.size >= MAX_SCOPED_CACHE_ENTRIES) {
     pruneExpiredScopedCacheEntries(nowMs);
   }
-  // If the cache is still at capacity after pruning (all entries are fresh),
-  // don't evict — the worst case is bounded by unique keys within one TTL
-  // window, and runtime controller-key churn is naturally limited.
+  // If the cache is still at capacity after pruning (all entries are still
+  // fresh), evict the oldest entry to enforce the bound strictly.
+  if (cache.size >= MAX_SCOPED_CACHE_ENTRIES) {
+    let oldestKey: string | undefined;
+    let oldestMs = nowMs;
+    for (const [key, entry] of cache.entries()) {
+      if (entry.loadedAtMs < oldestMs) {
+        oldestMs = entry.loadedAtMs;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey !== undefined) {
+      cache.delete(oldestKey);
+    }
+  }
   cache.set(controllerKey, { loadedAtMs: nowMs, runs });
 }
 

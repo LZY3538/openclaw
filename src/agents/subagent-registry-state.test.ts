@@ -218,16 +218,14 @@ describe("controller scoped snapshot equivalence", () => {
     expect(mocks.loadSubagentRunsForControllerFromSqlite).toHaveBeenCalledTimes(2);
   });
 
-  it("prunes expired entries when many unique keys exceed the cache cap", () => {
-    // Simulate read-heavy traversal across many distinct controllers.
-    // The cache cap is 64; after 128 unique keys with no time passing,
-    // the cache should be at or below the cap (the worst case is all
-    // entries are still fresh and the cap is exceeded, but runtime
-    // controller-key churn is bounded by 500ms TTL).
+  it("enforces strict 64-entry cap by evicting oldest fresh entry", () => {
+    // When more than 64 distinct controller keys are queried within one TTL
+    // window, all entries are still fresh and expired-only pruning does
+    // nothing.  The cache must evict the oldest entry to stay at 64.
     const keyCount = 128;
     const runs: SubagentRunRecord[] = [];
     for (let i = 0; i < keyCount; i++) {
-      const run = createRun(`multi-ctrl-${i}`);
+      const run = createRun(`strict-cap-${i}`);
       run.controllerSessionKey = `agent:main:ctrl-${i}`;
       run.requesterSessionKey = "agent:main:other";
       runs.push(run);
@@ -243,31 +241,33 @@ describe("controller scoped snapshot equivalence", () => {
       return run ? [run] : [];
     });
 
-    // Populate cache with many distinct keys
+    // Populate cache with 128 distinct keys — well beyond the 64 cap
     for (let i = 0; i < keyCount; i++) {
       callCount = i;
       getSubagentRunsSnapshotForController(new Map(), `agent:main:ctrl-${i}`);
     }
 
-    // Every key that was evicted (or never cached because expired pruning
-    // kept the cache under the cap) causes a re-query.  The important
-    // property is that the cache doesn't grow without bound — we verify
-    // that the first entries are re-queried (evicted or expired) while
-    // later entries are still cached.
-    // Reset to count fresh calls
+    // Reset and verify: the oldest entries (ctrl-0 through ctrl-63)
+    // should have been evicted, while the newest (ctrl-64 through ctrl-127)
+    // should still be cached.
     mocks.loadSubagentRunsForControllerFromSqlite.mockClear();
 
-    // Re-query the first key — it may or may not be cached depending on
-    // pruning, but the system must remain correct (return the right data).
-    const firstRun = runs[0];
-    if (!firstRun) {
-      throw new Error("expected first run");
-    }
-    mocks.loadSubagentRunsForControllerFromSqlite.mockReturnValue([firstRun]);
-    const result = getSubagentRunsSnapshotForController(new Map(), "agent:main:ctrl-0");
-    expect(result.has(firstRun.runId)).toBe(true);
+    // Oldest entry (ctrl-0) was evicted — must re-query SQLite
+    mocks.loadSubagentRunsForControllerFromSqlite.mockReturnValue([runs[0]!]);
+    const evicted = getSubagentRunsSnapshotForController(new Map(), "agent:main:ctrl-0");
+    expect(evicted.has(runs[0]!.runId)).toBe(true);
+    expect(mocks.loadSubagentRunsForControllerFromSqlite).toHaveBeenCalledTimes(1);
 
-    // Regardless of cache state, correctness is preserved.
-    // The cache cannot grow beyond 64 entries + natural TTL churn.
+    // Recent entry (ctrl-100) should still be cached — no SQLite call
+    mocks.loadSubagentRunsForControllerFromSqlite.mockClear();
+    const recentRun = runs[100];
+    if (!recentRun) {
+      throw new Error("expected run at index 100");
+    }
+    mocks.loadSubagentRunsForControllerFromSqlite.mockReturnValue([]);
+    const cached = getSubagentRunsSnapshotForController(new Map(), "agent:main:ctrl-100");
+    expect(cached.has(recentRun.runId)).toBe(true);
+    // Still in cache — no SQLite call needed
+    expect(mocks.loadSubagentRunsForControllerFromSqlite).not.toHaveBeenCalled();
   });
 });

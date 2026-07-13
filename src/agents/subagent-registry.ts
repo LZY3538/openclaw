@@ -1968,13 +1968,6 @@ export function releasePendingAgentSteeringItems(params: {
 
 export { prependAgentSteeringPrompt };
 
-export function listSubagentRunsForController(controllerSessionKey: string): SubagentRunRecord[] {
-  return listRunsForControllerFromRuns(
-    subagentRegistryDeps.getSubagentRunsSnapshotForRead(subagentRuns),
-    controllerSessionKey,
-  );
-}
-
 export function countActiveRunsForSession(requesterSessionKey: string): number {
   return countActiveRunsForSessionFromRuns(
     subagentRegistryDeps.getSubagentRunsSnapshotForRead(subagentRuns),
@@ -2019,27 +2012,6 @@ export function getSubagentRunByChildSessionKey(childSessionKey: string): Subage
     subagentRegistryDeps.getSubagentRunsSnapshotForRead(subagentRuns),
     childSessionKey,
   );
-}
-
-export function getLatestSubagentRunByChildSessionKey(
-  childSessionKey: string,
-): SubagentRunRecord | null {
-  const key = childSessionKey.trim();
-  if (!key) {
-    return null;
-  }
-
-  let latest: SubagentRunRecord | null = null;
-  for (const entry of subagentRegistryDeps.getSubagentRunsSnapshotForRead(subagentRuns).values()) {
-    if (entry.childSessionKey !== key) {
-      continue;
-    }
-    if (!latest || compareSubagentRunGeneration(entry, latest) > 0) {
-      latest = entry;
-    }
-  }
-
-  return latest;
 }
 
 export function initSubagentRegistry() {
