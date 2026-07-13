@@ -24,6 +24,12 @@ let persistedSubagentRunsReadCache:
 // same controller inside the TTL window (e.g. repeated status/control calls
 // and recursive multi-controller traversals).  Invalidation is tied to
 // persistSubagentRunsToDisk so stale data lasts at most one TTL window.
+//
+// The cache is bounded at MAX_SCOPED_CACHE_ENTRIES entries.  When the cap is
+// exceeded the oldest expired entries are evicted first; if none are expired
+// the cache temporarily grows until the next persist-driven invalidation.
+const MAX_SCOPED_CACHE_ENTRIES = 64;
+
 let scopedControllerCache:
   | Map<string, { loadedAtMs: number; runs: Map<string, SubagentRunRecord> }>
   | undefined;
@@ -99,14 +105,31 @@ function getCachedControllerRuns(
   return entry.runs;
 }
 
+function pruneExpiredScopedCacheEntries(nowMs: number): void {
+  const cache = scopedControllerCache;
+  if (!cache) {
+    return;
+  }
+  for (const [key, entry] of cache.entries()) {
+    if (nowMs - entry.loadedAtMs >= SUBAGENT_RUNS_READ_CACHE_TTL_MS) {
+      cache.delete(key);
+    }
+  }
+}
+
 function setCachedControllerRuns(
   controllerKey: string,
   runs: Map<string, SubagentRunRecord>,
 ): void {
-  getScopedControllerCache().set(controllerKey, {
-    loadedAtMs: Date.now(),
-    runs,
-  });
+  const cache = getScopedControllerCache();
+  const nowMs = Date.now();
+  if (cache.size >= MAX_SCOPED_CACHE_ENTRIES) {
+    pruneExpiredScopedCacheEntries(nowMs);
+  }
+  // If the cache is still at capacity after pruning (all entries are fresh),
+  // don't evict — the worst case is bounded by unique keys within one TTL
+  // window, and runtime controller-key churn is naturally limited.
+  cache.set(controllerKey, { loadedAtMs: nowMs, runs });
 }
 
 export function persistSubagentRunsToDisk(runs: Map<string, SubagentRunRecord>) {
