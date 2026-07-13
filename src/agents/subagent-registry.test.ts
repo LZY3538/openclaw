@@ -172,16 +172,6 @@ const mocks = vi.hoisted(() => ({
   getSubagentRunsSnapshotForRead: vi.fn(
     (runs: Map<string, import("./subagent-registry.types.js").SubagentRunRecord>) => new Map(runs),
   ),
-  getSubagentRunsSnapshotForRequester: vi.fn(
-    (
-      runs: Map<string, import("./subagent-registry.types.js").SubagentRunRecord>,
-      _requesterSessionKey: string,
-    ) => {
-      // Default: act as passthrough wrapping the full runs map.
-      // Tests that need scoped filtering can override with mockReturnValue / mockImplementation.
-      return new Map(runs);
-    },
-  ),
   getSubagentRunsSnapshotForController: vi.fn(
     (
       runs: Map<string, import("./subagent-registry.types.js").SubagentRunRecord>,
@@ -240,7 +230,6 @@ vi.mock("./subagent-registry-state.js", () => ({
   clearSubagentRunsReadCacheForTest: mocks.clearSubagentRunsReadCacheForTest,
   getSubagentRunsSnapshotForController: mocks.getSubagentRunsSnapshotForController,
   getSubagentRunsSnapshotForRead: mocks.getSubagentRunsSnapshotForRead,
-  getSubagentRunsSnapshotForRequester: mocks.getSubagentRunsSnapshotForRequester,
   persistSubagentRunsToDisk: mocks.persistSubagentRunsToDisk,
   persistSubagentRunsToDiskOrThrow: mocks.persistSubagentRunsToDiskOrThrow,
   restoreSubagentRunsFromDisk: mocks.restoreSubagentRunsFromDisk,

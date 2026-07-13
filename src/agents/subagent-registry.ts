@@ -92,7 +92,6 @@ import {
   clearSubagentRunsReadCacheForTest,
   getSubagentRunsSnapshotForController,
   getSubagentRunsSnapshotForRead,
-  getSubagentRunsSnapshotForRequester,
   persistSubagentRunsToDisk,
   persistSubagentRunsToDiskOrThrow,
   restoreSubagentRunsFromDisk,
@@ -136,7 +135,6 @@ type SubagentRegistryDeps = {
   captureSubagentCompletionReply: SubagentAnnounceModule["captureSubagentCompletionReply"];
   cleanupBrowserSessionsForLifecycleEnd: typeof cleanupBrowserSessionsForLifecycleEnd;
   getSubagentRunsSnapshotForRead: typeof getSubagentRunsSnapshotForRead;
-  getSubagentRunsSnapshotForRequester: typeof getSubagentRunsSnapshotForRequester;
   getSubagentRunsSnapshotForController: typeof getSubagentRunsSnapshotForController;
   getRuntimeConfig: typeof getRuntimeConfig;
   onAgentEvent: typeof onAgentEvent;
@@ -179,7 +177,6 @@ const defaultSubagentRegistryDeps: SubagentRegistryDeps = {
   cleanupBrowserSessionsForLifecycleEnd: async (params) =>
     (await loadCleanupBrowserSessionsForLifecycleEnd())(params),
   getSubagentRunsSnapshotForRead,
-  getSubagentRunsSnapshotForRequester,
   getSubagentRunsSnapshotForController,
   getRuntimeConfig,
   onAgentEvent,
@@ -1909,11 +1906,7 @@ export function listSubagentRunsForRequester(
   requesterSessionKey: string,
   options?: { requesterRunId?: string },
 ): SubagentRunRecord[] {
-  return listRunsForRequesterFromRuns(
-    subagentRegistryDeps.getSubagentRunsSnapshotForRequester(subagentRuns, requesterSessionKey),
-    requesterSessionKey,
-    options,
-  );
+  return listRunsForRequesterFromRuns(subagentRuns, requesterSessionKey, options);
 }
 
 export function leasePendingAgentSteeringItems(params: {
