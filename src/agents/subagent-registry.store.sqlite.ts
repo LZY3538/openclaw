@@ -264,35 +264,6 @@ function readSubagentRegistryRows(): SubagentRunSqliteRow[] {
   ).rows;
 }
 
-/** Loads subagent runs scoped to a single requester session key from sqlite. */
-export function loadSubagentRunsForRequesterFromSqlite(
-  requesterSessionKey: string,
-): SubagentRunRecord[] {
-  const key = requesterSessionKey.trim();
-  if (!key) {
-    return [];
-  }
-  const { db } = openOpenClawStateDatabase();
-  const stateDb = getNodeSqliteKysely<SubagentRegistryDatabase>(db);
-  const rows = executeSqliteQuerySync(
-    db,
-    stateDb
-      .selectFrom("subagent_runs")
-      .selectAll()
-      .where("requester_session_key", "=", key)
-      .orderBy("created_at", "asc")
-      .orderBy("run_id", "asc"),
-  ).rows;
-  const results: SubagentRunRecord[] = [];
-  for (const row of rows) {
-    const entry = rowToSubagentRunRecord(row);
-    if (entry) {
-      results.push(entry);
-    }
-  }
-  return results;
-}
-
 /**
  * Loads subagent runs for a controller session key from sqlite.
  *

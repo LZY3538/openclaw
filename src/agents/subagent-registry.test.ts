@@ -172,12 +172,6 @@ const mocks = vi.hoisted(() => ({
   getSubagentRunsSnapshotForRead: vi.fn(
     (runs: Map<string, import("./subagent-registry.types.js").SubagentRunRecord>) => new Map(runs),
   ),
-  getSubagentRunsSnapshotForController: vi.fn(
-    (
-      runs: Map<string, import("./subagent-registry.types.js").SubagentRunRecord>,
-      _controllerSessionKey: string,
-    ) => new Map(runs),
-  ),
   captureSubagentCompletionReply: vi.fn(async () => "final completion reply"),
   cleanupBrowserSessionsForLifecycleEnd: vi.fn(async () => {}),
   runSubagentAnnounceFlow: vi.fn(async () => true),
@@ -228,7 +222,6 @@ vi.mock("../sessions/session-lifecycle-events.js", () => ({
 
 vi.mock("./subagent-registry-state.js", () => ({
   clearSubagentRunsReadCacheForTest: mocks.clearSubagentRunsReadCacheForTest,
-  getSubagentRunsSnapshotForController: mocks.getSubagentRunsSnapshotForController,
   getSubagentRunsSnapshotForRead: mocks.getSubagentRunsSnapshotForRead,
   persistSubagentRunsToDisk: mocks.persistSubagentRunsToDisk,
   persistSubagentRunsToDiskOrThrow: mocks.persistSubagentRunsToDiskOrThrow,

@@ -12,7 +12,6 @@ import { withEnvAsync } from "../test-utils/env.js";
 import {
   loadSubagentRegistryFromSqlite,
   loadSubagentRunsForControllerFromSqlite,
-  loadSubagentRunsForRequesterFromSqlite,
   saveSubagentRegistryToSqlite,
 } from "./subagent-registry.store.sqlite.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
@@ -121,47 +120,6 @@ describe("subagent registry sqlite store", () => {
       saveSubagentRegistryToSqlite(new Map([[second.runId, second]]));
 
       expect([...loadSubagentRegistryFromSqlite().keys()]).toEqual(["run-two"]);
-    });
-  });
-
-  it("scoped requester query returns only matching requester_session_key rows", async () => {
-    await withTempStateEnv(async () => {
-      const matching = createRun({
-        runId: "run-match",
-        childSessionKey: "agent:main:subagent:match",
-        requesterSessionKey: "agent:main:target",
-      });
-      const other = createRun({
-        runId: "run-other",
-        childSessionKey: "agent:main:subagent:other",
-        requesterSessionKey: "agent:main:other",
-      });
-
-      saveSubagentRegistryToSqlite(
-        new Map([
-          [matching.runId, matching],
-          [other.runId, other],
-        ]),
-      );
-
-      const result = loadSubagentRunsForRequesterFromSqlite("agent:main:target");
-      expect(result.map((r) => r.runId).toSorted()).toEqual(["run-match"]);
-    });
-  });
-
-  it("scoped requester query returns empty for unknown requester key", async () => {
-    await withTempStateEnv(async () => {
-      saveSubagentRegistryToSqlite(new Map([["run-one", createRun({ runId: "run-one" })]]));
-
-      expect(loadSubagentRunsForRequesterFromSqlite("unknown-key")).toEqual([]);
-    });
-  });
-
-  it("scoped requester query returns empty for blank key", async () => {
-    await withTempStateEnv(async () => {
-      saveSubagentRegistryToSqlite(new Map([["run-one", createRun({ runId: "run-one" })]]));
-
-      expect(loadSubagentRunsForRequesterFromSqlite("")).toEqual([]);
     });
   });
 

@@ -90,7 +90,6 @@ import {
 } from "./subagent-registry-run-manager.js";
 import {
   clearSubagentRunsReadCacheForTest,
-  getSubagentRunsSnapshotForController,
   getSubagentRunsSnapshotForRead,
   persistSubagentRunsToDisk,
   persistSubagentRunsToDiskOrThrow,
@@ -135,7 +134,6 @@ type SubagentRegistryDeps = {
   captureSubagentCompletionReply: SubagentAnnounceModule["captureSubagentCompletionReply"];
   cleanupBrowserSessionsForLifecycleEnd: typeof cleanupBrowserSessionsForLifecycleEnd;
   getSubagentRunsSnapshotForRead: typeof getSubagentRunsSnapshotForRead;
-  getSubagentRunsSnapshotForController: typeof getSubagentRunsSnapshotForController;
   getRuntimeConfig: typeof getRuntimeConfig;
   onAgentEvent: typeof onAgentEvent;
   persistSubagentRunsToDisk: typeof persistSubagentRunsToDisk;
@@ -177,7 +175,6 @@ const defaultSubagentRegistryDeps: SubagentRegistryDeps = {
   cleanupBrowserSessionsForLifecycleEnd: async (params) =>
     (await loadCleanupBrowserSessionsForLifecycleEnd())(params),
   getSubagentRunsSnapshotForRead,
-  getSubagentRunsSnapshotForController,
   getRuntimeConfig,
   onAgentEvent,
   persistSubagentRunsToDisk,
@@ -1973,7 +1970,7 @@ export { prependAgentSteeringPrompt };
 
 export function listSubagentRunsForController(controllerSessionKey: string): SubagentRunRecord[] {
   return listRunsForControllerFromRuns(
-    subagentRegistryDeps.getSubagentRunsSnapshotForController(subagentRuns, controllerSessionKey),
+    subagentRegistryDeps.getSubagentRunsSnapshotForRead(subagentRuns),
     controllerSessionKey,
   );
 }

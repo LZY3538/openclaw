@@ -12,8 +12,8 @@ import {
 import {
   getLatestSubagentRunByChildSessionKey,
   listSubagentRunsForController,
-  markSubagentRunTerminated,
-} from "../../agents/subagent-registry.js";
+} from "../../agents/subagent-registry-read.js";
+import { markSubagentRunTerminated } from "../../agents/subagent-registry.js";
 import type { SubagentRunRecord } from "../../agents/subagent-registry.js";
 import {
   resolveInternalSessionKey,
