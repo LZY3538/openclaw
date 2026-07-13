@@ -234,10 +234,13 @@ describe("controller scoped snapshot equivalence", () => {
     }
 
     let callCount = 0;
-    mocks.loadSubagentRunsForControllerFromSqlite.mockImplementation(() => {
+    mocks.loadSubagentRunsForControllerFromSqlite.mockImplementation((): SubagentRunRecord[] => {
       const idx = callCount;
-      // Return the matching run for the current controller key
-      return idx < runs.length ? [runs[idx]] : [];
+      if (idx >= runs.length) {
+        return [];
+      }
+      const run = runs[idx];
+      return run ? [run] : [];
     });
 
     // Populate cache with many distinct keys
@@ -256,9 +259,13 @@ describe("controller scoped snapshot equivalence", () => {
 
     // Re-query the first key — it may or may not be cached depending on
     // pruning, but the system must remain correct (return the right data).
-    mocks.loadSubagentRunsForControllerFromSqlite.mockReturnValue([runs[0]]);
+    const firstRun = runs[0];
+    if (!firstRun) {
+      throw new Error("expected first run");
+    }
+    mocks.loadSubagentRunsForControllerFromSqlite.mockReturnValue([firstRun]);
     const result = getSubagentRunsSnapshotForController(new Map(), "agent:main:ctrl-0");
-    expect(result.has(runs[0].runId)).toBe(true);
+    expect(result.has(firstRun.runId)).toBe(true);
 
     // Regardless of cache state, correctness is preserved.
     // The cache cannot grow beyond 64 entries + natural TTL churn.
