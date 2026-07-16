@@ -721,7 +721,7 @@ export class AcpGatewayAgent implements Agent {
           if (status === "error") {
             const current = pending();
             if (current) {
-              this.rejectPendingPrompt(
+              void this.rejectPendingPrompt(
                 current,
                 new Error("Chat failed before the run started; try again."),
               );
@@ -1299,20 +1299,64 @@ export class AcpGatewayAgent implements Agent {
     this.disconnectTimer.unref?.();
   }
 
-  private rejectPendingPrompt(pending: PendingPrompt, error: Error): void {
+  private async rejectPendingPrompt(
+    pending: PendingPrompt,
+    error: Error,
+    interruptionMessage?: string,
+  ): Promise<void> {
     const currentPending = this.getPendingPrompt(pending.sessionId, pending.idempotencyKey);
     if (currentPending !== pending) {
       return;
     }
-    this.clearApprovalRelaysForPrompt(pending.sessionId, pending.idempotencyKey, {
-      denyActive: true,
-    });
-    this.pendingPrompts.delete(pending.sessionId);
-    this.sessionStore.clearActiveRun(pending.sessionId);
-    if (this.pendingPrompts.size === 0) {
-      this.clearDisconnectTimer();
+    const promptKey = this.pendingPromptKey(pending.sessionId, pending.idempotencyKey);
+    // Keep grace-expiry settlement reserved while delivery is awaited so a delayed send failure
+    // cannot reject the same prompt after its recorded interruption has started.
+    if (interruptionMessage && this.settlingPromptKeys.has(promptKey)) {
+      return;
     }
-    pending.reject(error);
+    if (interruptionMessage) {
+      this.settlingPromptKeys.add(promptKey);
+    }
+    try {
+      this.clearApprovalRelaysForPrompt(pending.sessionId, pending.idempotencyKey, {
+        denyActive: true,
+      });
+      this.pendingPrompts.delete(pending.sessionId);
+      this.sessionStore.clearActiveRun(pending.sessionId);
+      if (this.pendingPrompts.size === 0) {
+        this.clearDisconnectTimer();
+      }
+      if (interruptionMessage) {
+        try {
+          await this.sessionUpdates.emit({
+            sessionId: pending.sessionId,
+            sessionKey: pending.sessionKey,
+            ...(pending.ledgerSessionId ? { ledgerSessionId: pending.ledgerSessionId } : {}),
+            runId: pending.idempotencyKey,
+            record: true,
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: interruptionMessage },
+            },
+          });
+        } catch (err) {
+          this.log(
+            `disconnect interruption update failed for ${pending.sessionId}: ${String(err)}`,
+          );
+        }
+      }
+      pending.reject(error);
+    } finally {
+      if (interruptionMessage) {
+        this.settlingPromptKeys.delete(promptKey);
+      }
+    }
+  }
+
+  private disconnectDeadlineInterruptionMessage(pending: PendingPrompt): string {
+    return pending.sendAccepted
+      ? "Gateway disconnected after accepting your message. Its final outcome is unknown. Do not resend it automatically."
+      : "Gateway disconnected before accepting your message. Please resend it.";
   }
 
   private clearPendingDisconnectState(
@@ -1394,9 +1438,10 @@ export class AcpGatewayAgent implements Agent {
       this.log(`agent.wait reconcile failed for ${pending.idempotencyKey}: ${String(err)}`);
       if (deadlineExpired) {
         if (this.shouldRejectPendingAtDisconnectDeadline(pending, disconnectContext)) {
-          this.rejectPendingPrompt(
+          await this.rejectPendingPrompt(
             pending,
             new Error(`Gateway disconnected: ${disconnectContext.reason}`),
+            this.disconnectDeadlineInterruptionMessage(pending),
           );
           return false;
         }
@@ -1424,9 +1469,10 @@ export class AcpGatewayAgent implements Agent {
         if (!currentDisconnectContext) {
           return false;
         }
-        this.rejectPendingPrompt(
+        await this.rejectPendingPrompt(
           currentPending,
           new Error(`Gateway disconnected: ${currentDisconnectContext.reason}`),
+          this.disconnectDeadlineInterruptionMessage(currentPending),
         );
         return false;
       }

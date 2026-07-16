@@ -333,6 +333,67 @@ describe("ACP translator event ledger replay", () => {
     expect(replayedUpdates).not.toContain("user_message_chunk");
   });
 
+  it("replays the recorded interruption after an accepted prompt reaches the disconnect deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const eventLedger = createInMemoryAcpEventLedger();
+      const sessionStore = createInMemorySessionStore();
+      const connection = createAcpConnection();
+      const requestMock = vi.fn(async (method: string) => {
+        if (method === "chat.send") {
+          return {};
+        }
+        if (method === "agent.wait") {
+          return { status: "timeout" };
+        }
+        return { ok: true };
+      });
+      const agent = new AcpGatewayAgent(
+        connection,
+        createAcpGateway(requestMock as GatewayClient["request"]),
+        { eventLedger, sessionStore },
+      );
+
+      const created = await agent.newSession(createNewSessionRequest());
+      const session = sessionStore.getSession(created.sessionId);
+      if (!session) {
+        throw new Error("Expected new ACP session to be stored");
+      }
+      connection.__sessionUpdateMock.mockClear();
+
+      const promptPromise = agent.prompt(createPromptRequest(created.sessionId, "Question"));
+      void promptPromise.catch(() => {});
+      await waitForChatSend(requestMock);
+      agent.handleGatewayDisconnect("1006: connection lost");
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(promptPromise).rejects.toThrow("Gateway disconnected: 1006: connection lost");
+
+      const loadConnection = createAcpConnection();
+      const loadAgent = new AcpGatewayAgent(
+        loadConnection,
+        createAcpGateway(vi.fn(async () => ({ ok: true })) as GatewayClient["request"]),
+        { eventLedger, sessionStore: createInMemorySessionStore() },
+      );
+
+      await loadAgent.loadSession(createLoadSessionRequest(created.sessionId));
+
+      const interruption = {
+        sessionUpdate: "agent_message_chunk",
+        content: {
+          type: "text",
+          text: "Gateway disconnected after accepting your message. Its final outcome is unknown. Do not resend it automatically.",
+        },
+      };
+      expect(
+        loadConnection.__sessionUpdateMock.mock.calls
+          .map((call) => call[0]?.update)
+          .filter((update) => update?.sessionUpdate === "agent_message_chunk"),
+      ).toEqual([interruption]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("marks replay incomplete when an accepted prompt cannot be recorded", async () => {
     const innerLedger = createInMemoryAcpEventLedger();
     let markIncompleteResolve: ((value: unknown) => void) | undefined;
