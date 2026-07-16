@@ -339,6 +339,7 @@ describe("ACP translator event ledger replay", () => {
       const eventLedger = createInMemoryAcpEventLedger();
       const sessionStore = createInMemorySessionStore();
       const connection = createAcpConnection();
+      const sessionUpdate = connection["__sessionUpdateMock"];
       const requestMock = vi.fn(async (method: string) => {
         if (method === "chat.send") {
           return {};
@@ -359,7 +360,7 @@ describe("ACP translator event ledger replay", () => {
       if (!session) {
         throw new Error("Expected new ACP session to be stored");
       }
-      connection.__sessionUpdateMock.mockClear();
+      sessionUpdate.mockClear();
 
       const promptPromise = agent.prompt(createPromptRequest(created.sessionId, "Question"));
       void promptPromise.catch(() => {});
@@ -369,6 +370,7 @@ describe("ACP translator event ledger replay", () => {
       await expect(promptPromise).rejects.toThrow("Gateway disconnected: 1006: connection lost");
 
       const loadConnection = createAcpConnection();
+      const replaySessionUpdate = loadConnection["__sessionUpdateMock"];
       const loadAgent = new AcpGatewayAgent(
         loadConnection,
         createAcpGateway(vi.fn(async () => ({ ok: true })) as GatewayClient["request"]),
@@ -385,7 +387,7 @@ describe("ACP translator event ledger replay", () => {
         },
       };
       expect(
-        loadConnection.__sessionUpdateMock.mock.calls
+        replaySessionUpdate.mock.calls
           .map((call) => call[0]?.update)
           .filter((update) => update?.sessionUpdate === "agent_message_chunk"),
       ).toEqual([interruption]);

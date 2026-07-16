@@ -185,6 +185,7 @@ describe("acp translator stop reason mapping", () => {
     vi.useFakeTimers();
     try {
       const connection = createAcpConnection();
+      const sessionUpdate = connection["__sessionUpdateMock"];
       const request = vi.fn(async (method: string) => {
         if (method === "chat.send") {
           return {};
@@ -208,14 +209,14 @@ describe("acp translator stop reason mapping", () => {
       await vi.waitFor(() => {
         expect(request).toHaveBeenCalledWith("chat.send", expect.any(Object), { timeoutMs: null });
       });
-      connection.__sessionUpdateMock.mockClear();
+      sessionUpdate.mockClear();
 
       agent.handleGatewayDisconnect("1006: connection lost");
       await vi.advanceTimersByTimeAsync(5_000);
 
       await expect(promptPromise).rejects.toThrow("Gateway disconnected: 1006: connection lost");
-      expect(connection.__sessionUpdateMock).toHaveBeenCalledTimes(1);
-      expect(connection.__sessionUpdateMock).toHaveBeenCalledWith({
+      expect(sessionUpdate).toHaveBeenCalledTimes(1);
+      expect(sessionUpdate).toHaveBeenCalledWith({
         sessionId,
         update: {
           sessionUpdate: "agent_message_chunk",
@@ -234,6 +235,7 @@ describe("acp translator stop reason mapping", () => {
     vi.useFakeTimers();
     try {
       const connection = createAcpConnection();
+      const sessionUpdate = connection["__sessionUpdateMock"];
       const request = vi.fn(async (method: string) => {
         if (method === "chat.send") {
           throw new Error("gateway closed (1006): connection lost");
@@ -257,14 +259,14 @@ describe("acp translator stop reason mapping", () => {
       await vi.waitFor(() => {
         expect(request).toHaveBeenCalledWith("chat.send", expect.any(Object), { timeoutMs: null });
       });
-      connection.__sessionUpdateMock.mockClear();
+      sessionUpdate.mockClear();
 
       agent.handleGatewayDisconnect("1006: connection lost");
       await vi.advanceTimersByTimeAsync(5_000);
 
       await expect(promptPromise).rejects.toThrow("Gateway disconnected: 1006: connection lost");
-      expect(connection.__sessionUpdateMock).toHaveBeenCalledTimes(1);
-      expect(connection.__sessionUpdateMock).toHaveBeenCalledWith({
+      expect(sessionUpdate).toHaveBeenCalledTimes(1);
+      expect(sessionUpdate).toHaveBeenCalledWith({
         sessionId,
         update: {
           sessionUpdate: "agent_message_chunk",
