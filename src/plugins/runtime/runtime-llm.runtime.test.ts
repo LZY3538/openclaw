@@ -567,6 +567,7 @@ describe("runtime.llm.complete", () => {
       ],
       temperature: 0.2,
       maxTokens: 64,
+      reasoning: "high",
       purpose: "test-purpose",
     });
 
@@ -590,6 +591,7 @@ describe("runtime.llm.complete", () => {
     expectFields(requireRecord(completionArg.options, "completion options"), {
       maxTokens: 64,
       temperature: 0.2,
+      reasoning: "high",
     });
     expectFields(requireRecord(result, "completion result"), {
       text: "done",
