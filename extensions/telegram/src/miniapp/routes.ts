@@ -8,6 +8,12 @@ import {
   issueDeviceBootstrapToken,
 } from "openclaw/plugin-sdk/device-bootstrap";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import {
+  isRequestBodyLimitError,
+  readRequestBodyWithLimit,
+  requestBodyErrorToText,
+  WEBHOOK_BODY_READ_DEFAULTS,
+} from "openclaw/plugin-sdk/webhook-ingress";
 import { resolveTelegramAccount } from "../accounts.js";
 import { validateTelegramMiniAppInitData } from "./init-data.js";
 import { isTelegramMiniAppOwner } from "./owner.js";
@@ -85,10 +91,19 @@ async function handleAuth(
     return;
   }
 
-  const body = await readJsonBody(req);
-  if (body === "too-large") {
-    sendText(res, 413, "Payload too large");
-    return;
+  let body: Awaited<ReturnType<typeof readJsonBody>>;
+  try {
+    body = await readJsonBody(req);
+  } catch (error) {
+    if (isRequestBodyLimitError(error, "PAYLOAD_TOO_LARGE")) {
+      sendText(res, 413, requestBodyErrorToText(error.code));
+      return;
+    }
+    if (isRequestBodyLimitError(error, "REQUEST_BODY_TIMEOUT")) {
+      sendText(res, 408, requestBodyErrorToText(error.code));
+      return;
+    }
+    throw error;
   }
   if (!body) {
     sendText(res, 401, TELEGRAM_MINIAPP_EXPIRED_MESSAGE);
@@ -141,19 +156,13 @@ function currentConfig(api: OpenClawPluginApi): OpenClawConfig {
 
 async function readJsonBody(
   req: IncomingMessage,
-): Promise<{ initData: string; accountId?: string } | "too-large" | null> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of req) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += buffer.length;
-    if (total > MAX_BODY_BYTES) {
-      return "too-large";
-    }
-    chunks.push(buffer);
-  }
+): Promise<{ initData: string; accountId?: string } | null> {
+  const raw = await readRequestBodyWithLimit(req, {
+    maxBytes: MAX_BODY_BYTES,
+    timeoutMs: WEBHOOK_BODY_READ_DEFAULTS.preAuth.timeoutMs,
+  });
   try {
-    const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+    const parsed = JSON.parse(raw) as {
       initData?: unknown;
       accountId?: unknown;
     };

@@ -29,6 +29,20 @@ vi.mock("./url.js", async (importOriginal) => ({
   resolveTelegramMiniAppUrls,
 }));
 
+vi.mock("openclaw/plugin-sdk/webhook-ingress", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/webhook-ingress")>();
+  return {
+    ...actual,
+    WEBHOOK_BODY_READ_DEFAULTS: {
+      ...actual.WEBHOOK_BODY_READ_DEFAULTS,
+      preAuth: {
+        ...actual.WEBHOOK_BODY_READ_DEFAULTS.preAuth,
+        timeoutMs: 1,
+      },
+    },
+  };
+});
+
 const { registerTelegramMiniAppRoutes } = await import("./routes.js");
 
 const BOT_TOKEN = "fixture";
@@ -240,5 +254,40 @@ describe("registerTelegramMiniAppRoutes", () => {
 
     expect(last?.statusCode).toBe(429);
     expect(last?.body).toBe("Too many requests");
+  });
+
+  it("times out incomplete Mini App auth request bodies", async () => {
+    const route = createRoute(config());
+    const req = new Readable({
+      read() {
+        // Keep the body open until the route's body timeout settles the request.
+      },
+    }) as IncomingMessage;
+    req.method = "POST";
+    req.url = "/__openclaw_tg_miniapp/auth";
+    req.headers = { "content-type": "application/json" };
+    Object.defineProperty(req, "socket", {
+      value: { remoteAddress: "203.0.113.50" },
+    });
+    const res = new MockResponse() as ServerResponse & MockResponse;
+    const handled = route.handler(req, res);
+    void handled.catch(() => undefined);
+    let guard: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      const settled = await Promise.race([
+        handled.then(() => true),
+        new Promise<false>((resolve) => {
+          guard = setTimeout(() => resolve(false), 100);
+        }),
+      ]);
+
+      expect(settled).toBe(true);
+      expect(res.statusCode).toBe(408);
+      expect(res.body).toBe("Request body timeout");
+    } finally {
+      clearTimeout(guard);
+      req.destroy();
+    }
   });
 });
