@@ -9,6 +9,7 @@ import { keepHttpServerTaskAlive, waitUntilAbort } from "openclaw/plugin-sdk/cha
 import { KeyedAsyncQueue } from "openclaw/plugin-sdk/keyed-async-queue";
 import { createChannelReplayGuard } from "openclaw/plugin-sdk/persistent-dedupe";
 import { safeEqualSecret } from "openclaw/plugin-sdk/security-runtime";
+import { WEBHOOK_BODY_READ_DEFAULTS } from "openclaw/plugin-sdk/webhook-ingress";
 import { RAFT_CHANNEL_ID, type ResolvedRaftAccount } from "./accounts.js";
 import { dispatchRaftWake } from "./inbound.js";
 
@@ -68,6 +69,7 @@ type RaftWakeReplayGuard = ReturnType<typeof createRaftWakeReplayGuard>;
 type RaftGatewayDeps = {
   createToken?: () => string;
   spawnBridge?: (params: { profile: string; endpoint: string; token: string }) => RaftBridgeProcess;
+  wakeBodyTimeoutMs?: number;
   wakeDedupe?: RaftWakeReplayGuard;
 };
 
@@ -122,18 +124,40 @@ function hasMatchingToken(request: IncomingMessage, expected: string): boolean {
   return safeEqualSecret(value, expected);
 }
 
-async function readWakePayload(request: IncomingMessage): Promise<Record<string, unknown>> {
+async function readWakePayload(
+  request: IncomingMessage,
+  timeoutMs: number,
+): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let bytes = 0;
   let tooLarge = false;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    bytes += buffer.length;
-    if (bytes > MAX_WAKE_BODY_BYTES) {
-      tooLarge = true;
-      continue;
+  let timedOut = false;
+  // A stalled bridge write must not pin this authenticated handler indefinitely.
+  // Destroying the partial request also closes the unusable connection.
+  const timer = setTimeout(() => {
+    timedOut = true;
+    request.destroy();
+  }, timeoutMs);
+  timer.unref();
+  try {
+    for await (const chunk of request) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bytes += buffer.length;
+      if (bytes > MAX_WAKE_BODY_BYTES) {
+        tooLarge = true;
+        continue;
+      }
+      chunks.push(buffer);
     }
-    chunks.push(buffer);
+  } catch (error) {
+    if (!timedOut) {
+      throw error;
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+  if (timedOut) {
+    throw new WakeRequestError(408, "Wake payload body timed out.");
   }
   if (tooLarge) {
     throw new WakeRequestError(413, "Wake payload exceeds the 16 KiB limit.");
@@ -290,7 +314,10 @@ export async function startRaftGatewayAccount(
         return;
       }
 
-      const payload = await readWakePayload(request);
+      const payload = await readWakePayload(
+        request,
+        deps.wakeBodyTimeoutMs ?? WEBHOOK_BODY_READ_DEFAULTS.postAuth.timeoutMs,
+      );
       if (containsMessageContent(payload)) {
         throw new WakeRequestError(400, "Wake payload must not include message content.");
       }

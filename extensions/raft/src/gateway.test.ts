@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract";
@@ -372,6 +373,59 @@ describe("Raft wake gateway", () => {
 
     controller.abort();
     await start;
+  });
+
+  it("closes authenticated wake requests whose bodies never finish", async () => {
+    const { ctx, controller, run, wakeDedupe } = createContext();
+    Object.defineProperty(ctx, "abortSignal", { value: controller.signal });
+    const bridge = new FakeBridge();
+    let endpoint: string | undefined;
+    let token: string | undefined;
+    const start = startRaftGatewayAccount(ctx, {
+      spawnBridge: (params) => {
+        endpoint = params.endpoint;
+        token = params.token;
+        return bridge;
+      },
+      wakeBodyTimeoutMs: 50,
+      wakeDedupe,
+    });
+
+    const wakeEndpoint = new URL(await waitFor(() => endpoint));
+    const bridgeToken = await waitFor(() => token);
+    const socket = connect(Number(wakeEndpoint.port), wakeEndpoint.hostname);
+    try {
+      await new Promise<void>((resolve) => {
+        socket.once("connect", resolve);
+      });
+      socket.write(
+        [
+          `POST ${wakeEndpoint.pathname} HTTP/1.1`,
+          `Host: ${wakeEndpoint.host}`,
+          `x-raft-bridge-token: ${bridgeToken}`,
+          "Content-Type: application/json",
+          "Content-Length: 128",
+          "",
+          '{"eventId":"unfinished',
+        ].join("\r\n"),
+      );
+
+      const closed = await Promise.race([
+        new Promise<true>((resolve) => {
+          socket.once("close", () => resolve(true));
+        }),
+        new Promise<false>((resolve) => {
+          setTimeout(() => resolve(false), 500);
+        }),
+      ]);
+      expect(closed).toBe(true);
+      expect(run).not.toHaveBeenCalled();
+      expect(ctx.log?.warn).toHaveBeenCalledWith(expect.stringContaining("timed out"));
+    } finally {
+      socket.destroy();
+      controller.abort();
+      await start;
+    }
   });
 
   it("keeps a failed delivery eligible for a bridge retry", async () => {
