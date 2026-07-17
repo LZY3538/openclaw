@@ -901,6 +901,13 @@ export async function monitorZalouserProvider(
     runtime.log?.(`zalouser resolve failed; using config entries. ${String(err)}`);
   }
 
+  // Recheck after async preflight: if the abort signal fired while we were
+  // resolving friends/groups, settle and return before startZaloListener.
+  if (stopped || abortSignal.aborted) {
+    settleSuccess();
+    return { stop };
+  }
+
   let listener: Awaited<ReturnType<typeof startZaloListener>>;
   try {
     listener = await startZaloListener({
