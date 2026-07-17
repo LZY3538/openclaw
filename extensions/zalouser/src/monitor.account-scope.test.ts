@@ -154,6 +154,7 @@ describe("zalouser monitor pairing account scoping", () => {
   });
 
   it("returns before startZaloListener when the abort signal is already fired", async () => {
+    startZaloListenerMock.mockClear();
     setZalouserRuntime({
       logging: { shouldLogVerbose: () => false },
       channel: {

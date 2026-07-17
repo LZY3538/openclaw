@@ -764,6 +764,50 @@ export async function monitorZalouserProvider(
   );
   const groupHistories = new Map<string, HistoryEntry[]>();
 
+  // Abort signal lifecycle — check before any async preflight work so an
+  // already-aborted shutdown does not perform Zalo API calls or session
+  // restoration in startZaloListener.
+  let listenerStop: (() => void) | null = null;
+  let stopped = false;
+  const stop = () => {
+    if (stopped) {
+      return;
+    }
+    stopped = true;
+    listenerStop?.();
+    listenerStop = null;
+  };
+
+  let settled = false;
+  const { promise: waitForExit, resolve: resolveRun, reject: rejectRun } = createDeferred<void>();
+
+  const settleSuccess = () => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    stop();
+    resolveRun();
+  };
+
+  const settleFailure = (error: unknown) => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    stop();
+    rejectRun(error instanceof Error ? error : new Error(String(error)));
+  };
+
+  const onAbort = () => {
+    settleSuccess();
+  };
+  if (abortSignal.aborted) {
+    onAbort();
+    return { stop };
+  }
+  abortSignal.addEventListener("abort", onAbort, { once: true });
+
   try {
     const profile = account.profile;
     const allowFromEntries = (account.config.allowFrom ?? [])
@@ -856,51 +900,6 @@ export async function monitorZalouserProvider(
   } catch (err) {
     runtime.log?.(`zalouser resolve failed; using config entries. ${String(err)}`);
   }
-
-  let listenerStop: (() => void) | null = null;
-  let stopped = false;
-
-  const stop = () => {
-    if (stopped) {
-      return;
-    }
-    stopped = true;
-    listenerStop?.();
-    listenerStop = null;
-  };
-
-  let settled = false;
-  const { promise: waitForExit, resolve: resolveRun, reject: rejectRun } = createDeferred<void>();
-
-  const settleSuccess = () => {
-    if (settled) {
-      return;
-    }
-    settled = true;
-    stop();
-    resolveRun();
-  };
-
-  const settleFailure = (error: unknown) => {
-    if (settled) {
-      return;
-    }
-    settled = true;
-    stop();
-    rejectRun(error instanceof Error ? error : new Error(String(error)));
-  };
-
-  const onAbort = () => {
-    settleSuccess();
-  };
-  if (abortSignal.aborted) {
-    // The signal is already aborted — settle waitForExit and return before
-    // startZaloListener so we do not restore the Zalo API session or
-    // allocate listener resources that would be immediately torn down.
-    onAbort();
-    return { stop };
-  }
-  abortSignal.addEventListener("abort", onAbort, { once: true });
 
   let listener: Awaited<ReturnType<typeof startZaloListener>>;
   try {
