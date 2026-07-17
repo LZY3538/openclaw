@@ -37,6 +37,7 @@ export function resolveClaudeCliSyntheticAuth() {
       };
     }
   }
+  return undefined;
 }
 
 const anthropicProviderDiscovery: ProviderPlugin = {
