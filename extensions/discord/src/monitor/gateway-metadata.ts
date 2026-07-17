@@ -174,7 +174,7 @@ function parseDiscordGatewayInfoBody(body: string): APIGatewayBotInfo {
   return parsed;
 }
 
-async function fetchDiscordGatewayInfo(params: {
+export async function fetchDiscordGatewayInfo(params: {
   token: string;
   fetchImpl: DiscordGatewayFetch;
   fetchInit?: DiscordGatewayFetchInit;

@@ -2,6 +2,7 @@
 import { createServer, type Server } from "node:http";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  fetchDiscordGatewayInfo,
   fetchDiscordGatewayInfoWithTimeout,
   fetchDiscordGatewayMetadataGuarded,
   resolveDiscordGatewayInfoTimeoutMs,
@@ -155,7 +156,9 @@ describe("fetchDiscordGatewayInfo bounded reads", () => {
       res.writeHead(200, { "content-type": "application/json" });
       const writeMore = () => {
         while (streamedBytes < oversizedPayloadBytes) {
-          if (res.destroyed) return;
+          if (res.destroyed) {
+            return;
+          }
           streamedBytes += chunk.byteLength;
           if (!res.write(chunk)) {
             res.once("drain", writeMore);
