@@ -893,7 +893,11 @@ export async function monitorZalouserProvider(
   const onAbort = () => {
     settleSuccess();
   };
-  abortSignal.addEventListener("abort", onAbort, { once: true });
+  if (abortSignal.aborted) {
+    onAbort();
+  } else {
+    abortSignal.addEventListener("abort", onAbort, { once: true });
+  }
 
   let listener: Awaited<ReturnType<typeof startZaloListener>>;
   try {
