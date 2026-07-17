@@ -48,8 +48,12 @@ export async function authenticate(
         let drained = 0;
         while (drained < MAX_AUTH_BODY_DRAIN_BYTES) {
           const { value, done } = await reader.read();
-          if (done) break;
-          if (value) drained += value.byteLength;
+          if (done) {
+            break;
+          }
+          if (value) {
+            drained += value.byteLength;
+          }
         }
         await reader.cancel().catch(() => {});
       } catch {
