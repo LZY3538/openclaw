@@ -856,7 +856,11 @@ export async function monitorZaloProvider(options: ZaloMonitorOptions): Promise<
     }
   };
 
-  abortSignal.addEventListener("abort", stopOnAbort, { once: true });
+  if (abortSignal.aborted) {
+    stopOnAbort();
+  } else {
+    abortSignal.addEventListener("abort", stopOnAbort, { once: true });
+  }
 
   runtime.log?.(
     `[${account.accountId}] Zalo provider init mode=${mode} mediaMaxMb=${String(effectiveMediaMaxMb)}`,
