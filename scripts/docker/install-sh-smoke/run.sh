@@ -335,7 +335,9 @@ NODE
   fi
 
   echo "==> Run official installer one-liner"
-  curl -fsSL --connect-timeout 30 --max-time 300 "$INSTALL_URL" | bash -s -- --no-prompt
+  timeout --kill-after=30s "${INSTALL_COMMAND_TIMEOUT}s" \
+    bash -c 'curl -fsSL --connect-timeout 30 --max-time 300 "$1" | bash -s -- --no-prompt' \
+    _ "$INSTALL_URL"
 
   echo "==> Verify installed version"
   if [[ -n "${OPENCLAW_INSTALL_LATEST_OUT:-}" ]]; then
