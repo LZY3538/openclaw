@@ -426,7 +426,7 @@ describe("Dockerfile", () => {
   it("counts primary pub keys before Docker apt fingerprint compare and dearmor", async () => {
     const dockerfile = collapseDockerContinuations(await readFile(dockerfilePath, "utf8"));
     const anchor = dockerfile.indexOf(
-      "curl -fsSL https://download.docker.com/linux/debian/gpg -o /tmp/docker.gpg.asc",
+      "curl -fsSL --connect-timeout 10 --max-time 120 https://download.docker.com/linux/debian/gpg -o /tmp/docker.gpg.asc",
     );
     expect(anchor).toBeGreaterThan(-1);
     const slice = dockerfile.slice(anchor);
