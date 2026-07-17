@@ -20,7 +20,9 @@ const DISCORD_GATEWAY_INFO_TIMEOUT_ENV = "OPENCLAW_DISCORD_GATEWAY_INFO_TIMEOUT_
 const DISCORD_GATEWAY_METADATA_MAX_BYTES = 4 * 1024 * 1024;
 const DISCORD_GATEWAY_METADATA_FALLBACK_LOG_INTERVAL_MS = 60_000;
 
-type DiscordGatewayMetadataResponse = Pick<Response, "ok" | "status" | "text">;
+type DiscordGatewayMetadataResponse = Pick<Response, "ok" | "status" | "text"> & {
+  body?: ReadableStream<Uint8Array> | null;
+};
 export type DiscordGatewayFetchInit = Record<string, unknown> & {
   headers?: Record<string, string>;
 };
@@ -172,7 +174,7 @@ function parseDiscordGatewayInfoBody(body: string): APIGatewayBotInfo {
   return parsed;
 }
 
-async function fetchDiscordGatewayInfo(params: {
+export async function fetchDiscordGatewayInfo(params: {
   token: string;
   fetchImpl: DiscordGatewayFetch;
   fetchInit?: DiscordGatewayFetchInit;
@@ -195,14 +197,57 @@ async function fetchDiscordGatewayInfo(params: {
   }
 
   let body: string;
-  try {
-    body = await response.text();
-  } catch (error) {
-    throw createGatewayMetadataError({
-      detail: formatErrorMessage(error),
-      transient: true,
-      cause: error,
-    });
+  if (response.body && typeof response.body.getReader === "function") {
+    // Streaming path: enforce the size limit before buffering the full
+    // response, matching the materializeGuardedResponse pattern.
+    try {
+      const bounded = await readResponseWithLimit(
+        response as Response,
+        DISCORD_GATEWAY_METADATA_MAX_BYTES,
+        {
+          onOverflow: ({ size, maxBytes }) =>
+            new Error(
+              `Discord gateway metadata response body too large: ${size} bytes (limit: ${maxBytes} bytes)`,
+            ),
+        },
+      );
+      body = bounded.toString("utf8");
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("Discord gateway metadata response body too large")
+      ) {
+        // Size overflow is not transient — retrying will not help.
+        throw createGatewayMetadataError({
+          detail: error.message,
+          transient: false,
+        });
+      }
+      throw createGatewayMetadataError({
+        detail: formatErrorMessage(error),
+        transient: true,
+        cause: error,
+      });
+    }
+  } else {
+    // Body stream unavailable (e.g. mock or polyfill); fall back to text().
+    try {
+      body = await response.text();
+    } catch (error) {
+      throw createGatewayMetadataError({
+        detail: formatErrorMessage(error),
+        transient: true,
+        cause: error,
+      });
+    }
+    // Post-hoc guard for the body-less fallback path.
+    const byteLength = Buffer.byteLength(body, "utf8");
+    if (byteLength > DISCORD_GATEWAY_METADATA_MAX_BYTES) {
+      throw createGatewayMetadataError({
+        detail: `Discord gateway metadata response body too large: ${byteLength} bytes (limit: ${DISCORD_GATEWAY_METADATA_MAX_BYTES} bytes)`,
+        transient: false,
+      });
+    }
   }
   const summary = summarizeGatewayResponseBody(body);
   const transient = isTransientDiscordGatewayResponse(response.status, body);
