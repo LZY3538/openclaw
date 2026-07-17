@@ -857,10 +857,15 @@ export async function monitorZaloProvider(options: ZaloMonitorOptions): Promise<
   };
 
   if (abortSignal.aborted) {
+    // The signal is already aborted — trigger cleanup in non-webhook mode
+    // and return before acquiring any resources (hosted-media routes,
+    // webhook registration, or polling). This avoids registering cleanup
+    // handlers after stop() has already set stopped=true, which would
+    // skip them in the finally block and leak plugin HTTP routes.
     stopOnAbort();
-  } else {
-    abortSignal.addEventListener("abort", stopOnAbort, { once: true });
+    return;
   }
+  abortSignal.addEventListener("abort", stopOnAbort, { once: true });
 
   runtime.log?.(
     `[${account.accountId}] Zalo provider init mode=${mode} mediaMaxMb=${String(effectiveMediaMaxMb)}`,
