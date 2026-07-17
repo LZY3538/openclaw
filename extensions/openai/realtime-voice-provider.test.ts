@@ -334,7 +334,7 @@ describe("buildOpenAIRealtimeVoiceProvider", () => {
 
     const socket = FakeWebSocket.instances[0];
     const options = socket?.args[1] as
-      | { headers?: Record<string, string>; maxPayload?: number }
+      | { headers?: Record<string, string>; maxPayload?: number; handshakeTimeout?: number }
       | undefined;
     expectRecordFields(options?.headers, "websocket headers", {
       originator: "openclaw",
@@ -343,6 +343,7 @@ describe("buildOpenAIRealtimeVoiceProvider", () => {
     });
     expect(options?.headers).not.toHaveProperty("OpenAI-Beta");
     expect(options?.maxPayload).toBe(16 * 1024 * 1024);
+    expect(options?.handshakeTimeout).toBe(10_000);
   });
 
   it("requires Platform auth for native realtime websocket bridges", async () => {
