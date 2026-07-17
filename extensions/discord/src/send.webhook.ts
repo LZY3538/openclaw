@@ -64,6 +64,7 @@ async function throwWebhookResponseError(response: Response): Promise<never> {
   const raw = await readResponseTextLimited(response, DISCORD_WEBHOOK_ERROR_BODY_LIMIT_BYTES).catch(
     () => "",
   );
+  void response.body?.cancel()?.catch(() => {});
   const parsed = coerceWebhookErrorBody(raw);
   if (response.status === 429) {
     throw new RateLimitError(response, {
