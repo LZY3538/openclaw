@@ -22,14 +22,23 @@ const { FakeWebSocket } = vi.hoisted(() => {
     readonly listeners = new Map<string, Listener[]>();
     readonly headers?: Record<string, string>;
     readonly maxPayload?: number;
+    readonly handshakeTimeout?: number;
     readonly url?: string;
     readyState = MockWebSocket.CONNECTING;
     sent: string[] = [];
 
-    constructor(url?: string, options?: { headers?: Record<string, string>; maxPayload?: number }) {
+    constructor(
+      url?: string,
+      options?: {
+        headers?: Record<string, string>;
+        maxPayload?: number;
+        handshakeTimeout?: number;
+      },
+    ) {
       this.url = url;
       this.headers = options?.headers;
       this.maxPayload = options?.maxPayload;
+      this.handshakeTimeout = options?.handshakeTimeout;
       MockWebSocket.instances.push(this);
     }
 
@@ -261,6 +270,7 @@ describe("xai tts", () => {
       expect(wsUrl.searchParams.get("speed")).toBe("1.1");
       expect(ws?.headers?.Authorization).toBe(["Bearer", "dummy"].join(" "));
       expect(ws?.maxPayload).toBe(5_024);
+      expect(ws?.handshakeTimeout).toBe(5_000);
       ws?.emit("open");
       expect(ws?.sent).toEqual([
         JSON.stringify({ type: "text.delta", delta: "hello" }),

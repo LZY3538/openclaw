@@ -178,6 +178,7 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
       const ws = new WebSocket(url, {
         headers,
         maxPayload: XAI_REALTIME_WS_MAX_PAYLOAD_BYTES,
+        handshakeTimeout: XAI_REALTIME_CONNECT_TIMEOUT_MS,
         ...(proxyAgent ? { agent: proxyAgent } : {}),
       });
       this.ws = ws;
