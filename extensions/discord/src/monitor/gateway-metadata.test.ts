@@ -115,9 +115,7 @@ describe("Discord gateway metadata", () => {
   });
 });
 
-describe("fetchDiscordGatewayInfo bounded reads (post-hoc)", () => {
-  const DISCORD_GATEWAY_METADATA_MAX_BYTES = 4 * 1024 * 1024;
-
+describe("fetchDiscordGatewayInfo bounded reads", () => {
   const validPayload = JSON.stringify({
     url: "wss://gateway.discord.gg/",
     shards: 1,
@@ -129,16 +127,19 @@ describe("fetchDiscordGatewayInfo bounded reads (post-hoc)", () => {
     },
   });
 
-  it("returns parsed gateway info when response body is within the 4 MiB cap", async () => {
-    const okResponse = {
+  function bodyLessMock(text: string) {
+    return {
       ok: true as const,
       status: 200,
-      text: async () => validPayload,
+      body: null,
+      text: async () => text,
     };
+  }
 
+  it("returns parsed gateway info when response body is within the 4 MiB cap", async () => {
     const info = await fetchDiscordGatewayInfo({
       token: "test",
-      fetchImpl: async () => okResponse,
+      fetchImpl: async () => bodyLessMock(validPayload),
     });
 
     expect(info.url).toBe("wss://gateway.discord.gg/");
@@ -146,18 +147,49 @@ describe("fetchDiscordGatewayInfo bounded reads (post-hoc)", () => {
     expect(info.session_start_limit.total).toBe(1000);
   });
 
-  it("rejects with a size error when response body exceeds the 4 MiB cap", async () => {
-    const body = "x".repeat(DISCORD_GATEWAY_METADATA_MAX_BYTES + 1024);
-    const okResponse = {
-      ok: true as const,
-      status: 200,
-      text: async () => body,
-    };
+  it("rejects oversized response via loopback HTTP (streaming pre-read bound)", async () => {
+    const oversizedPayloadBytes = DISCORD_GATEWAY_METADATA_MAX_BYTES + 256 * 1024;
+    let streamedBytes = 0;
+    const server = createServer((_request, res) => {
+      const chunk = Buffer.alloc(64 * 1024, 0x78);
+      res.writeHead(200, { "content-type": "application/json" });
+      const writeMore = () => {
+        while (streamedBytes < oversizedPayloadBytes) {
+          if (res.destroyed) return;
+          streamedBytes += chunk.byteLength;
+          if (!res.write(chunk)) {
+            res.once("drain", writeMore);
+            return;
+          }
+        }
+        res.end();
+      };
+      writeMore();
+    });
+    const port = await listenLoopbackServer(server);
+    try {
+      const rawResponse = await fetch(`http://127.0.0.1:${port}`);
+      await expect(
+        fetchDiscordGatewayInfo({
+          token: "test",
+          fetchImpl: async () => rawResponse,
+        }),
+      ).rejects.toMatchObject({
+        message: expect.stringMatching(
+          `Failed to get gateway information from Discord: Discord gateway metadata response body too large: \\d+ bytes \\(limit: ${DISCORD_GATEWAY_METADATA_MAX_BYTES} bytes\\)`,
+        ) as unknown as string,
+      });
+    } finally {
+      await closeServer(server);
+    }
+  });
 
+  it("rejects oversized body-less response via post-hoc fallback guard", async () => {
+    const body = "x".repeat(DISCORD_GATEWAY_METADATA_MAX_BYTES + 1024);
     await expect(
       fetchDiscordGatewayInfo({
         token: "test",
-        fetchImpl: async () => okResponse,
+        fetchImpl: async () => bodyLessMock(body),
       }),
     ).rejects.toMatchObject({
       message: expect.stringMatching(
@@ -166,46 +198,11 @@ describe("fetchDiscordGatewayInfo bounded reads (post-hoc)", () => {
     });
   });
 
-  it("negative-control: unbounded response.text() would buffer the full oversized body", async () => {
-    // This test proves the raw .text() call (without the post-hoc check)
-    // would silently buffer a body larger than the cap. The fix adds the
-    // post-hoc byte-length check so it now throws.
-    const oversizedBody = "x".repeat(DISCORD_GATEWAY_METADATA_MAX_BYTES + 64 * 1024);
-    const okResponse = {
-      ok: true as const,
-      status: 200,
-      text: async () => oversizedBody,
-    };
-
-    // Without the fix, this would resolve successfully (silently buffering >4 MiB).
-    // With the fix, it throws.
-    await expect(
-      fetchDiscordGatewayInfo({
-        token: "test",
-        fetchImpl: async () => okResponse,
-      }),
-    ).rejects.toMatchObject({
-      message: expect.stringContaining(
-        "Discord gateway metadata response body too large:",
-      ) as unknown as string,
-    });
-  });
-
-  it("mutation: removing the post-hoc check causes over-cap bodies to be accepted silently (load-bearing)", async () => {
-    // This test asserts that the fix is load-bearing: if someone removes
-    // the byte-length check from fetchDiscordGatewayInfo and reverts to
-    // bare response.text(), the oversized body test should catch it.
+  it("mutation: removing both guards causes over-cap bodies to be accepted silently", async () => {
     const body = Buffer.alloc(DISCORD_GATEWAY_METADATA_MAX_BYTES + 1, 0x78).toString();
-    const okResponse = {
-      ok: true as const,
-      status: 200,
-      text: async () => body,
-    };
-
-    // The fix rejects; a revert to bare .text() would not reject.
     const error = await fetchDiscordGatewayInfo({
       token: "test",
-      fetchImpl: async () => okResponse,
+      fetchImpl: async () => bodyLessMock(body),
     }).catch((err: unknown) => err);
 
     expect(error).toBeInstanceOf(Error);
