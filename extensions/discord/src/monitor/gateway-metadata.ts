@@ -204,6 +204,17 @@ async function fetchDiscordGatewayInfo(params: {
       cause: error,
     });
   }
+
+  // Post-hoc size guard: the fetchImpl type only exposes .text(), not .body /
+  // .clone(), so we check the byte length after the body is buffered. A
+  // response this large is malformed or hostile — retrying will not help.
+  const byteLength = Buffer.byteLength(body, "utf8");
+  if (byteLength > DISCORD_GATEWAY_METADATA_MAX_BYTES) {
+    throw createGatewayMetadataError({
+      detail: `Discord gateway metadata response body too large: ${byteLength} bytes (limit: ${DISCORD_GATEWAY_METADATA_MAX_BYTES} bytes)`,
+      transient: false,
+    });
+  }
   const summary = summarizeGatewayResponseBody(body);
   const transient = isTransientDiscordGatewayResponse(response.status, body);
 
