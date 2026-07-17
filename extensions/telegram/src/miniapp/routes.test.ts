@@ -270,13 +270,12 @@ describe("registerTelegramMiniAppRoutes", () => {
       value: { remoteAddress: "203.0.113.50" },
     });
     const res = new MockResponse() as ServerResponse & MockResponse;
-    const handled = route.handler(req, res);
-    void handled.catch(() => undefined);
+    const handled = Promise.resolve(route.handler(req, res)).catch(() => undefined);
     let guard: ReturnType<typeof setTimeout> | undefined;
 
     try {
       const settled = await Promise.race([
-        handled.then(() => true),
+        handled.then(() => true as const),
         new Promise<false>((resolve) => {
           guard = setTimeout(() => resolve(false), 100);
         }),
