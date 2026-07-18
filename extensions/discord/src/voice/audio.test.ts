@@ -97,15 +97,17 @@ describe("discord voice opus codec", () => {
     const packets = await packetsPromise;
     const onError = vi.fn();
 
-    await decodeOpusStream(Readable.from(packets), {
+    const decoded = await decodeOpusStream(Readable.from(packets), {
       onError,
       onVerbose: vi.fn(),
       onWarn: vi.fn(),
     });
 
+    expect(decoded).toHaveLength(960 * 2 * 2);
+    expect(decoded.length).toBeLessThanOrEqual(4096);
     expect(onError).toHaveBeenCalledWith(
       expect.objectContaining({
-        message: expect.stringContaining("decoded audio exceeds"),
+        message: expect.stringContaining("decoded audio exceeds 4096 bytes"),
       }),
     );
   });
