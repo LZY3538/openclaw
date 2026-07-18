@@ -82,6 +82,7 @@ class WakeRequestError extends Error {
   constructor(
     readonly statusCode: number,
     message: string,
+    readonly closeConnection = false,
   ) {
     super(message);
   }
@@ -139,7 +140,7 @@ async function readWakePayload(
   if (typeof contentLengthHeader === "string") {
     const contentLength = Number(contentLengthHeader);
     if (Number.isFinite(contentLength) && contentLength > MAX_WAKE_BODY_BYTES) {
-      throw new WakeRequestError(413, "Wake payload exceeds the 16 KiB limit.");
+      throw new WakeRequestError(413, "Wake payload exceeds the 16 KiB limit.", true);
     }
   }
 
@@ -212,12 +213,28 @@ function resolveWakeDedupeKey(payload: Record<string, unknown>): string | undefi
   return eventId ? hashWakeEventId(`id:${eventId}`) : undefined;
 }
 
-function sendJson(response: ServerResponse, statusCode: number, body: Record<string, unknown>) {
+function sendJson(
+  response: ServerResponse,
+  statusCode: number,
+  body: Record<string, unknown>,
+  closeConnection = false,
+) {
+  if (closeConnection) {
+    response.shouldKeepAlive = false;
+  }
   response.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
+    ...(closeConnection ? { connection: "close" } : {}),
   });
-  response.end(JSON.stringify(body));
+  const payload = JSON.stringify(body);
+  if (closeConnection) {
+    // The rejected body remains unread, so close immediately after flushing the
+    // error response; otherwise the client can retain this authenticated socket.
+    response.end(payload, () => response.destroy());
+    return;
+  }
+  response.end(payload);
 }
 
 function closeServer(server: Server, sockets: Set<Socket>) {
@@ -362,9 +379,10 @@ export async function startRaftGatewayAccount(
     })().catch((error: unknown) => {
       const statusCode = error instanceof WakeRequestError ? error.statusCode : 500;
       const message = error instanceof WakeRequestError ? error.message : "Internal server error.";
+      const closeConnection = error instanceof WakeRequestError && error.closeConnection;
       ctx.log?.warn?.(`Raft wake request rejected: ${message}`);
       if (!response.headersSent) {
-        sendJson(response, statusCode, { error: message });
+        sendJson(response, statusCode, { error: message }, closeConnection);
       } else {
         response.destroy();
       }
