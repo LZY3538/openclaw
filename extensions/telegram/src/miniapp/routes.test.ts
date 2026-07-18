@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import net from "node:net";
 import { Readable } from "node:stream";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
@@ -256,37 +257,57 @@ describe("registerTelegramMiniAppRoutes", () => {
     expect(last?.body).toBe("Too many requests");
   });
 
-  it("times out incomplete Mini App auth request bodies", async () => {
+  it("returns 408 and closes the socket for incomplete Mini App auth bodies", async () => {
     const route = createRoute(config());
-    const req = new Readable({
-      read() {
-        // Keep the body open until the route's body timeout settles the request.
-      },
-    }) as IncomingMessage;
-    req.method = "POST";
-    req.url = "/__openclaw_tg_miniapp/auth";
-    req.headers = { "content-type": "application/json" };
-    Object.defineProperty(req, "socket", {
-      value: { remoteAddress: "203.0.113.50" },
+    const server = createServer((req, res) => {
+      void Promise.resolve(route.handler(req, res)).catch(() => {
+        res.destroy();
+      });
     });
-    const res = new MockResponse() as ServerResponse & MockResponse;
-    const handled = Promise.resolve(route.handler(req, res)).catch(() => undefined);
-    let guard: ReturnType<typeof setTimeout> | undefined;
-
     try {
-      const settled = await Promise.race([
-        handled.then(() => true as const),
-        new Promise<false>((resolve) => {
-          guard = setTimeout(() => resolve(false), 100);
-        }),
-      ]);
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("expected TCP server address");
+      }
+      const response = await new Promise<string>((resolve, reject) => {
+        const socket = net.createConnection({ host: "127.0.0.1", port: address.port });
+        let raw = "";
+        const timeout = setTimeout(() => {
+          socket.destroy();
+          reject(new Error("timed out waiting for server to close the partial request"));
+        }, 500);
+        socket.setEncoding("utf8");
+        socket.on("connect", () => {
+          socket.write(
+            [
+              "POST /__openclaw_tg_miniapp/auth HTTP/1.1",
+              "Host: 127.0.0.1",
+              "Content-Type: application/json",
+              "Content-Length: 64",
+              "Connection: keep-alive",
+              "",
+              '{"initData":"partial',
+            ].join("\r\n"),
+          );
+        });
+        socket.on("data", (chunk) => {
+          raw += chunk;
+        });
+        socket.on("error", reject);
+        socket.on("close", () => {
+          clearTimeout(timeout);
+          resolve(raw);
+        });
+      });
 
-      expect(settled).toBe(true);
-      expect(res.statusCode).toBe(408);
-      expect(res.body).toBe("Request body timeout");
+      expect(response).toContain("HTTP/1.1 408 Request Timeout");
+      expect(response).toContain("Connection: close");
+      expect(response).toContain("Request body timeout");
     } finally {
-      clearTimeout(guard);
-      req.destroy();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
     }
   });
 });
