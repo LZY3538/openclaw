@@ -764,49 +764,11 @@ export async function monitorZalouserProvider(
   );
   const groupHistories = new Map<string, HistoryEntry[]>();
 
-  // Abort signal lifecycle — check before any async preflight work so an
-  // already-aborted shutdown does not perform Zalo API calls or session
-  // restoration in startZaloListener.
-  let listenerStop: (() => void) | null = null;
-  let stopped = false;
-  const stop = () => {
-    if (stopped) {
-      return;
-    }
-    stopped = true;
-    listenerStop?.();
-    listenerStop = null;
-  };
-
-  let settled = false;
-  const { promise: waitForExit, resolve: resolveRun, reject: rejectRun } = createDeferred<void>();
-
-  const settleSuccess = () => {
-    if (settled) {
-      return;
-    }
-    settled = true;
-    stop();
-    resolveRun();
-  };
-
-  const settleFailure = (error: unknown) => {
-    if (settled) {
-      return;
-    }
-    settled = true;
-    stop();
-    rejectRun(error instanceof Error ? error : new Error(String(error)));
-  };
-
-  const onAbort = () => {
-    settleSuccess();
-  };
+  // AbortSignal does not replay past aborts; shutdown must win before any
+  // startup API calls or listener restoration.
   if (abortSignal.aborted) {
-    onAbort();
-    return { stop };
+    return { stop: () => undefined };
   }
-  abortSignal.addEventListener("abort", onAbort, { once: true });
 
   try {
     const profile = account.profile;
@@ -901,12 +863,49 @@ export async function monitorZalouserProvider(
     runtime.log?.(`zalouser resolve failed; using config entries. ${String(err)}`);
   }
 
-  // Recheck after async preflight: if the abort signal fired while we were
-  // resolving friends/groups, settle and return before startZaloListener.
-  if (stopped || abortSignal.aborted) {
-    settleSuccess();
-    return { stop };
+  // Preflight is async and not cancellable, so recheck before restoring the listener.
+  // No await occurs between this guard and abort listener registration below.
+  if (abortSignal.aborted) {
+    return { stop: () => undefined };
   }
+
+  let listenerStop: (() => void) | null = null;
+  let stopped = false;
+
+  const stop = () => {
+    if (stopped) {
+      return;
+    }
+    stopped = true;
+    listenerStop?.();
+    listenerStop = null;
+  };
+
+  let settled = false;
+  const { promise: waitForExit, resolve: resolveRun, reject: rejectRun } = createDeferred<void>();
+
+  const settleSuccess = () => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    stop();
+    resolveRun();
+  };
+
+  const settleFailure = (error: unknown) => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    stop();
+    rejectRun(error instanceof Error ? error : new Error(String(error)));
+  };
+
+  const onAbort = () => {
+    settleSuccess();
+  };
+  abortSignal.addEventListener("abort", onAbort, { once: true });
 
   let listener: Awaited<ReturnType<typeof startZaloListener>>;
   try {

@@ -1,6 +1,7 @@
 // Zalouser tests cover monitor.group gating plugin behavior.
 import { createChannelMessageReplyPipeline } from "openclaw/plugin-sdk/channel-outbound";
 import { KeyedAsyncQueue } from "openclaw/plugin-sdk/core";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig, PluginRuntime } from "../runtime-api.js";
 import "./monitor.send.test-mocks.js";
@@ -35,6 +36,19 @@ function createAccount(): ResolvedZalouserAccount {
       groups: {
         "*": { requireMention: true },
       },
+    },
+  };
+}
+
+function createMutableNameAccount(): ResolvedZalouserAccount {
+  const account = createAccount();
+  return {
+    ...account,
+    config: {
+      ...account.config,
+      dangerouslyAllowNameMatching: true,
+      dmPolicy: "allowlist",
+      allowFrom: ["Alice"],
     },
   };
 }
@@ -841,26 +855,11 @@ describe("zalouser monitor group mention gating", () => {
   it("does not start the listener when shutdown arrives during startup resolution", async () => {
     installRuntime({ commandAuthorized: false });
     const abortController = new AbortController();
-    let finishFriendsLookup:
-      | ((friends: Array<{ userId: string; displayName: string }>) => void)
-      | undefined;
-    listZaloFriendsMock.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          finishFriendsLookup = resolve;
-        }),
-    );
+    const friendsLookup = createDeferred<Array<{ userId: string; displayName: string }>>();
+    listZaloFriendsMock.mockReturnValueOnce(friendsLookup.promise);
 
     const run = monitorZalouserProvider({
-      account: {
-        ...createAccount(),
-        config: {
-          ...createAccount().config,
-          dangerouslyAllowNameMatching: true,
-          dmPolicy: "allowlist",
-          allowFrom: ["Alice"],
-        },
-      },
+      account: createMutableNameAccount(),
       config: createConfig(),
       runtime: createRuntimeEnv(),
       abortSignal: abortController.signal,
@@ -868,9 +867,26 @@ describe("zalouser monitor group mention gating", () => {
 
     await vi.waitFor(() => expect(listZaloFriendsMock).toHaveBeenCalledOnce());
     abortController.abort();
-    finishFriendsLookup?.([{ userId: "123", displayName: "Alice" }]);
+    friendsLookup.resolve([{ userId: "123", displayName: "Alice" }]);
     await run;
 
+    expect(startZaloListenerMock).not.toHaveBeenCalled();
+  });
+
+  it("skips startup when the abort signal is already fired", async () => {
+    installRuntime({ commandAuthorized: false });
+    const abortController = new AbortController();
+    abortController.abort();
+
+    const result = await monitorZalouserProvider({
+      account: createMutableNameAccount(),
+      config: createConfig(),
+      runtime: createRuntimeEnv(),
+      abortSignal: abortController.signal,
+    });
+
+    expect(result.stop).toBeTypeOf("function");
+    expect(listZaloFriendsMock).not.toHaveBeenCalled();
     expect(startZaloListenerMock).not.toHaveBeenCalled();
   });
 
