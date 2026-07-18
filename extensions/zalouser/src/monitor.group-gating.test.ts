@@ -439,10 +439,8 @@ describe("zalouser monitor group mention gating", () => {
   ) {
     installRuntime({ commandAuthorized: false });
     const abortController = new AbortController();
-    // Let the preflight (friends/groups resolution) run to completion,
-    // then trigger shutdown inside startZaloListener so the monitor settles
-    // through the post-startZaloListener abortSignal.aborted check (line 961)
-    // rather than through the pre-try-block guard (line 804).
+    // Let preflight finish, then stop during listener startup so this helper
+    // still exercises startup resolution instead of the pre-abort return.
     startZaloListenerMock.mockImplementationOnce(async () => {
       abortController.abort();
       return { stop: vi.fn() };
@@ -838,6 +836,42 @@ describe("zalouser monitor group mention gating", () => {
 
     expect(listZaloFriendsMock).toHaveBeenCalledWith("default");
     expect(listZaloGroupsMock).toHaveBeenCalledWith("default");
+  });
+
+  it("does not start the listener when shutdown arrives during startup resolution", async () => {
+    installRuntime({ commandAuthorized: false });
+    const abortController = new AbortController();
+    let finishFriendsLookup:
+      | ((friends: Array<{ userId: string; displayName: string }>) => void)
+      | undefined;
+    listZaloFriendsMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishFriendsLookup = resolve;
+        }),
+    );
+
+    const run = monitorZalouserProvider({
+      account: {
+        ...createAccount(),
+        config: {
+          ...createAccount().config,
+          dangerouslyAllowNameMatching: true,
+          dmPolicy: "allowlist",
+          allowFrom: ["Alice"],
+        },
+      },
+      config: createConfig(),
+      runtime: createRuntimeEnv(),
+      abortSignal: abortController.signal,
+    });
+
+    await vi.waitFor(() => expect(listZaloFriendsMock).toHaveBeenCalledOnce());
+    abortController.abort();
+    finishFriendsLookup?.([{ userId: "123", displayName: "Alice" }]);
+    await run;
+
+    expect(startZaloListenerMock).not.toHaveBeenCalled();
   });
 
   it("allows group control commands when sender is in groupAllowFrom", async () => {
