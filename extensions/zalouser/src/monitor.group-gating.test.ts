@@ -439,7 +439,14 @@ describe("zalouser monitor group mention gating", () => {
   ) {
     installRuntime({ commandAuthorized: false });
     const abortController = new AbortController();
-    abortController.abort();
+    // Let the preflight (friends/groups resolution) run to completion,
+    // then trigger shutdown inside startZaloListener so the monitor settles
+    // through the post-startZaloListener abortSignal.aborted check (line 961)
+    // rather than through the pre-try-block guard (line 804).
+    startZaloListenerMock.mockImplementationOnce(async () => {
+      abortController.abort();
+      return { stop: vi.fn() };
+    });
     await monitorZalouserProvider({
       account: {
         ...createAccount(),
