@@ -8,6 +8,8 @@ import {
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+// Register the SDK boundary mocks before preloading lazy production modules;
+// reversing this order reaches the real credential store and Zalo client.
 import "./monitor.send.test-mocks.js";
 import "./zalo-js.test-mocks.js";
 import "./channel.runtime.js";
@@ -35,6 +37,14 @@ function createAccount(config: ResolvedZalouserAccount["config"] = {}): Resolved
     authenticated: true,
     config,
   };
+}
+
+function createNameMatchedAccount(): ResolvedZalouserAccount {
+  return createAccount({
+    dangerouslyAllowNameMatching: true,
+    dmPolicy: "allowlist",
+    allowFrom: ["Alice"],
+  });
 }
 
 describe("zalouser gateway lifecycle", () => {
@@ -78,11 +88,7 @@ describe("zalouser gateway lifecycle", () => {
 
     const task = requireStartAccount()(
       createStartAccountContext({
-        account: createAccount({
-          dangerouslyAllowNameMatching: true,
-          dmPolicy: "allowlist",
-          allowFrom: ["Alice"],
-        }),
+        account: createNameMatchedAccount(),
         abortSignal: abort.signal,
       }),
     );
@@ -107,11 +113,7 @@ describe("zalouser gateway lifecycle", () => {
 
     await requireStartAccount()(
       createStartAccountContext({
-        account: createAccount({
-          dangerouslyAllowNameMatching: true,
-          dmPolicy: "allowlist",
-          allowFrom: ["Alice"],
-        }),
+        account: createNameMatchedAccount(),
         abortSignal: abort.signal,
       }),
     );
