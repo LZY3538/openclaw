@@ -58,6 +58,13 @@ describe("zalouser gateway lifecycle", () => {
         ...lifecycle,
         stop,
       });
+      expect(startZaloListenerMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          accountId: "default",
+          profile: "default",
+          abortSignal: lifecycle.abort.signal,
+        }),
+      );
     } finally {
       lifecycle.abort.abort();
       await lifecycle.task;
