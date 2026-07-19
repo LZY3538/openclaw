@@ -24,7 +24,7 @@ export async function createPtyAdapter(params: {
   const pty = spawn(preparedSpawn.command, preparedSpawn.args, {
     cwd: params.cwd,
     env: preparedSpawn.env ? toStringEnv(preparedSpawn.env) : undefined,
-    name: params.name ?? process.env.TERM ?? "xterm-256color",
+    name: (params.name ?? process.env.TERM)?.trim() || "xterm-256color",
     cols: params.cols ?? 120,
     rows: params.rows ?? 30,
   });

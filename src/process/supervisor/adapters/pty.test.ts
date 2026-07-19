@@ -83,7 +83,17 @@ describe("createPtyAdapter", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
     vi.clearAllMocks();
+  });
+
+  it("uses the default terminal name when TERM is blank", async () => {
+    vi.stubEnv("TERM", "   ");
+    spawnMock.mockReturnValue(createStubPty());
+
+    await createPtyAdapter({ shell: "bash", args: ["-lc", "echo ok"] });
+
+    expect(firstSpawnCall()[2]).toMatchObject({ name: "xterm-256color" });
   });
 
   it("forwards non-SIGTERM explicit signals to node-pty kill on non-Windows", async () => {
