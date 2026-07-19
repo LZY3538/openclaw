@@ -1,5 +1,5 @@
 // Browser tests cover chromeefault browser plugin behavior.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:child_process", async () => {
   const { mockNodeBuiltinModule } = await import("openclaw/plugin-sdk/test-node-mocks");
@@ -70,6 +70,10 @@ describe("browser default executable detection", () => {
     vi.mocked(fs.readFileSync).mockReset();
     vi.mocked(os.homedir).mockReset();
     vi.mocked(os.homedir).mockReturnValue("/Users/test");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("prefers default Chromium browser on macOS", () => {
@@ -212,6 +216,25 @@ describe("browser default executable detection", () => {
     );
 
     expect(exe?.path.toLowerCase()).toMatch(/\\google\\chrome\\application\\chrome\.exe$/);
+  });
+
+  it("uses standard Windows install roots when ProgramFiles overrides are blank", () => {
+    vi.stubEnv("ProgramFiles", "   ");
+    vi.stubEnv("ProgramFiles(x86)", "");
+    vi.mocked(fs.existsSync).mockImplementation(
+      (candidate) =>
+        String(candidate) === "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    );
+
+    expect(
+      resolveBrowserExecutableForPlatform(
+        {} as Parameters<typeof resolveBrowserExecutableForPlatform>[0],
+        "win32",
+      ),
+    ).toEqual({
+      kind: "chrome",
+      path: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    });
   });
 
   it("canonicalizes an explicitly configured Opera launcher", () => {

@@ -666,10 +666,11 @@ function findGoogleChromeExecutableLinux(): BrowserExecutable | null {
 
 /** Find the best Chromium-family executable on Windows. */
 function findChromeExecutableWindows(): BrowserExecutable | null {
-  const localAppData = process.env.LOCALAPPDATA ?? "";
-  const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
+  const localAppData = normalizeOptionalString(process.env.LOCALAPPDATA) ?? "";
+  const programFiles = normalizeOptionalString(process.env.ProgramFiles) ?? "C:\\Program Files";
   // Must use bracket notation: variable name contains parentheses.
-  const programFilesX86 = process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
+  const programFilesX86 =
+    normalizeOptionalString(process.env["ProgramFiles(x86)"]) ?? "C:\\Program Files (x86)";
   const joinWin = path.win32.join;
   const candidates: Array<BrowserExecutable> = [];
 
@@ -736,9 +737,10 @@ function findChromeExecutableWindows(): BrowserExecutable | null {
 }
 
 function findGoogleChromeExecutableWindows(): BrowserExecutable | null {
-  const localAppData = process.env.LOCALAPPDATA ?? "";
-  const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
-  const programFilesX86 = process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
+  const localAppData = normalizeOptionalString(process.env.LOCALAPPDATA) ?? "";
+  const programFiles = normalizeOptionalString(process.env.ProgramFiles) ?? "C:\\Program Files";
+  const programFilesX86 =
+    normalizeOptionalString(process.env["ProgramFiles(x86)"]) ?? "C:\\Program Files (x86)";
   const joinWin = path.win32.join;
   const candidates: string[] = [];
 
