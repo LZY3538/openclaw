@@ -22,6 +22,7 @@ import {
   normalizeClawHubSha256Integrity,
   normalizeClawHubSha256Hex,
   parseClawHubPluginSpec,
+  reportClawHubSkillInstallTelemetry,
   resolveLatestVersionFromPackage,
   satisfiesGatewayMinimum,
   satisfiesPluginApiRange,
@@ -179,6 +180,8 @@ describe("clawhub helpers", () => {
     delete process.env.CLAWHUB_AUTH_TOKEN;
     delete process.env.CLAWHUB_CONFIG_PATH;
     delete process.env.CLAWDHUB_CONFIG_PATH;
+    delete process.env.CLAWHUB_DISABLE_TELEMETRY;
+    delete process.env.CLAWDHUB_DISABLE_TELEMETRY;
     originalEnv.restore();
   });
 
@@ -403,6 +406,20 @@ describe("clawhub helpers", () => {
     };
 
     await expect(searchClawHubSkills({ query: "calendar", fetchImpl })).resolves.toStrictEqual([]);
+  });
+
+  it("preserves the legacy telemetry opt-out when the primary env is blank", async () => {
+    process.env.CLAWHUB_DISABLE_TELEMETRY = "   ";
+    process.env.CLAWDHUB_DISABLE_TELEMETRY = "true";
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+
+    await reportClawHubSkillInstallTelemetry({
+      token: "token-123",
+      slug: "calendar",
+      fetchImpl,
+    });
+
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("preserves the configured ClawHub base URL path prefix", async () => {
