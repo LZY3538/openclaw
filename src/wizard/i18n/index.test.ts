@@ -42,6 +42,14 @@ describe("wizard i18n", () => {
     expect(t("wizard.gateway.port")).toBe("Gateway 連接埠");
   });
 
+  it("ignores blank locale overrides when a process locale is available", () => {
+    vi.stubEnv("OPENCLAW_LOCALE", "   ");
+    vi.stubEnv("LC_ALL", "");
+    vi.stubEnv("LC_MESSAGES", "zh-CN");
+    vi.stubEnv("LANG", "en-US");
+    expect(t("wizard.gateway.port")).toBe("Gateway 端口");
+  });
+
   it("falls back to English and interpolates params", () => {
     expect(t("wizard.gateway.port", undefined, { locale: "zh-CN" })).toBe("Gateway 端口");
     expect(t("wizard.gateway.missing", undefined, { locale: "zh-CN" })).toBe(
