@@ -445,6 +445,34 @@ describe("clawhub helpers", () => {
     expect(url.searchParams.get("q")).toBe("calendar");
   });
 
+  it("treats an empty primary telemetry setting as absent", async () => {
+    process.env.CLAWHUB_DISABLE_TELEMETRY = "";
+    process.env.CLAWDHUB_DISABLE_TELEMETRY = "true";
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+
+    await reportClawHubSkillInstallTelemetry({
+      token: "test-token",
+      slug: "calendar",
+      fetchImpl,
+    });
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("lets a nonblank primary telemetry setting override the legacy opt-out", async () => {
+    process.env.CLAWHUB_DISABLE_TELEMETRY = "false";
+    process.env.CLAWDHUB_DISABLE_TELEMETRY = "true";
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+
+    await reportClawHubSkillInstallTelemetry({
+      token: "test-token",
+      slug: "calendar",
+      fetchImpl,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it("sends owner-qualified skill detail lookups as slug plus ownerHandle", async () => {
     let requestedUrl = "";
 
