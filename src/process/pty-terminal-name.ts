@@ -1,4 +1,4 @@
-export const DEFAULT_PTY_TERMINAL_NAME = "xterm-256color";
+const DEFAULT_PTY_TERMINAL_NAME = "xterm-256color";
 
 export function readPtyTerminalName(
   env: NodeJS.ProcessEnv | undefined,
